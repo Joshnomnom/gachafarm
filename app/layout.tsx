@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://gachafarm-creature-bell.gogo01helo.chatgpt.site'),
   title: 'GachaFarm — Raise the Impossible',
   description: 'Summon unique animals, build an extraordinary idle farm, and chase mythical creatures.',
   openGraph: {
