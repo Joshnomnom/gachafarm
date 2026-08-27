@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   BORDERS,
+  SPECIES,
+  VARIANTS,
   animalIncomePerMinute,
   claimableIncome,
   createInitialGameState,
   farmIncomePerMinute,
+  farmSlotCount,
   makeAnimal,
   mergeAnimals,
   migrateGameState,
@@ -60,8 +63,9 @@ describe('GachaFarm domain rules', () => {
     delete (legacy as Partial<typeof legacy>).ownedBorders;
     delete (legacy as Partial<typeof legacy>).activeBorder;
     const migrated = migrateGameState(legacy, 200);
-    expect(migrated?.version).toBe(2);
+    expect(migrated?.version).toBe(3);
     expect(migrated?.ownedBorders).toEqual(['meadow']);
+    expect(migrated?.upgrades).toEqual({ habitat: 1, production: 1, offline: 1, luck: 1 });
     expect(migrated?.animals).toHaveLength(5);
   });
 
@@ -73,13 +77,28 @@ describe('GachaFarm domain rules', () => {
   });
 
   it('allows border boosts to improve creature pull rates', () => {
-    const withoutBoost = summonAnimal(sequence([0.06, 0, 0, 0, 0, 0, 0]), 'normal', 0, 0);
-    const withBoost = summonAnimal(sequence([0.06, 0, 0, 0, 0, 0]), 'boosted', 0, 0, { dragonBonus: 0.02 });
+    const withoutBoost = summonAnimal(sequence([0.94, 0, 0, 0, 0, 0, 0]), 'normal', 0, 0);
+    const withBoost = summonAnimal(sequence([0.94, 0, 0, 0, 0, 0]), 'boosted', 0, 0, { dragonBonus: 0.02 });
     expect(withoutBoost.animal.speciesId).not.toBe('dragon');
     expect(withBoost.animal.speciesId).toBe('dragon');
   });
 
   it('guarantees Starfall Fence on the fifteenth border pull', () => {
     expect(summonBorder(() => 0, 14)).toEqual({ borderId: 'starfall', nextPity: 0 });
+  });
+
+  it('expands the farm by three habitats per habitat upgrade', () => {
+    const state = createInitialGameState(0);
+    state.upgrades.habitat = 3;
+    expect(farmSlotCount(state)).toBe(12);
+  });
+
+  it('guarantees Rare or better for the final grand-summon slot', () => {
+    const result = summonAnimal(sequence([0, 0, 0, 0, 0, 0]), 'rare', 0, 0, { minimumRank: 'Rare' });
+    expect(['Rare', 'Epic', 'Legendary', 'Mythic']).toContain(SPECIES[result.animal.speciesId].rank);
+  });
+
+  it('ships five collectible visual variants', () => {
+    expect(Object.keys(VARIANTS)).toEqual(['natural', 'bronze', 'golden', 'diamond', 'mystic']);
   });
 });
