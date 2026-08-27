@@ -1,12 +1,15 @@
 "use client";
 
-import { type DragEvent, useEffect, useMemo, useState } from "react";
+import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   Bell,
   Bot,
   Clock3,
+  Cloud,
+  CloudOff,
   Coins,
+  Copy,
   Dna,
   Fence,
   Gem,
@@ -16,6 +19,7 @@ import {
   Package,
   Palette,
   PawPrint,
+  Search,
   Sparkles,
   Star,
   WandSparkles,
@@ -74,6 +78,31 @@ type MergeReveal = {
   key: number;
   parents: AnimalInstance[];
   offspring: AnimalInstance;
+};
+type CloudStatus = "connecting" | "synced" | "saving" | "local" | "error";
+type OnlineProfile = {
+  displayName: string;
+  visitCode: string;
+  createdAt: number;
+  updatedAt: number;
+};
+type PublicFarmAnimal = {
+  speciesId: SpeciesId;
+  variant: VariantId;
+  level: number;
+  potential: number;
+  activeSlot: number | null;
+};
+type PublicFarm = {
+  displayName: string;
+  visitCode: string;
+  activeBorder: BorderId;
+  coins: number;
+  incomeRate: number;
+  animalCount: number;
+  speciesCount: number;
+  activeAnimals: PublicFarmAnimal[];
+  updatedAt: number;
 };
 
 const STORAGE_KEY = "gachafarm.prototype.v1";
@@ -137,6 +166,17 @@ function compactNumber(value: number) {
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(value);
+}
+
+async function uploadCloudState(state: GameState) {
+  const response = await fetch("/api/cloud-save", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ state }),
+  });
+  const data = (await response.json()) as { savedAt?: number; error?: string };
+  if (!response.ok || !data.savedAt) throw new Error(data.error || "Cloud save failed.");
+  return data.savedAt;
 }
 
 function CreatureArt({
@@ -282,6 +322,16 @@ export default function Home() {
     tone: ActionTone;
   } | null>(null);
   const [upgradingId, setUpgradingId] = useState<UpgradeId | null>(null);
+  const [cloudStatus, setCloudStatus] = useState<CloudStatus>("connecting");
+  const [cloudLastSaved, setCloudLastSaved] = useState<number | null>(null);
+  const [onlineProfile, setOnlineProfile] = useState<OnlineProfile | null>(null);
+  const [profileName, setProfileName] = useState("");
+  const [visitQuery, setVisitQuery] = useState("");
+  const [visitResults, setVisitResults] = useState<PublicFarm[]>([]);
+  const [visitedFarm, setVisitedFarm] = useState<PublicFarm | null>(null);
+  const [visitLoading, setVisitLoading] = useState(false);
+  const cloudReadyRef = useRef(false);
+  const cloudSaveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const currentTime = Date.now();
@@ -310,6 +360,75 @@ export default function Home() {
   useEffect(() => {
     if (hydrated) localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
   }, [game, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    let cancelled = false;
+    async function connectCloud() {
+      setCloudStatus("connecting");
+      try {
+        const response = await fetch("/api/player", { cache: "no-store" });
+        const data = (await response.json()) as {
+          profile?: OnlineProfile;
+          save?: { state: unknown; updatedAt: number } | null;
+          error?: string;
+        };
+        if (!response.ok || !data.profile) throw new Error(data.error || "Cloud profile unavailable.");
+        if (cancelled) return;
+        setOnlineProfile(data.profile);
+        setProfileName(data.profile.displayName);
+        if (data.save) {
+          const cloudState = migrateGameState(data.save.state, Date.now());
+          if (cloudState) {
+            setGame(cloudState);
+            setCloudLastSaved(data.save.updatedAt);
+            setMessage("Cloud farm restored. Your progress now follows your account.");
+          }
+        } else {
+          const saved = localStorage.getItem(STORAGE_KEY);
+          const localState = saved
+            ? migrateGameState(JSON.parse(saved) as unknown, Date.now())
+            : null;
+          const savedAt = await uploadCloudState(localState ?? createInitialGameState(Date.now()));
+          if (cancelled) return;
+          setCloudLastSaved(savedAt);
+          setMessage("Browser farm migrated to your new cloud save.");
+        }
+        cloudReadyRef.current = true;
+        setCloudStatus("synced");
+      } catch (error) {
+        console.error("cloud bootstrap failed", error);
+        if (!cancelled) {
+          cloudReadyRef.current = false;
+          setCloudStatus("local");
+          setMessage("Playing with a local save. Cloud connection will retry next visit.");
+        }
+      }
+    }
+    void connectCloud();
+    return () => { cancelled = true; };
+  }, [hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || !onlineProfile || !cloudReadyRef.current) return;
+    if (cloudSaveTimerRef.current) window.clearTimeout(cloudSaveTimerRef.current);
+    setCloudStatus("saving");
+    cloudSaveTimerRef.current = window.setTimeout(() => {
+      void uploadCloudState(game)
+        .then((savedAt) => {
+          setCloudLastSaved(savedAt);
+          setCloudStatus("synced");
+        })
+        .catch((error) => {
+          console.error("automatic cloud save failed", error);
+          setCloudStatus("error");
+        });
+    }, 1200);
+    return () => {
+      if (cloudSaveTimerRef.current) window.clearTimeout(cloudSaveTimerRef.current);
+    };
+  }, [game, hydrated, onlineProfile]);
+
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
@@ -446,6 +565,76 @@ export default function Home() {
     setGame((current) => ({ ...current, coins: current.coins + 100000 }));
     setMessage("Alpha test grant added 100,000 coins.");
     showAction("●", "+100,000 test coins", "earn");
+  }
+
+  async function saveCloudNow() {
+    if (!onlineProfile) {
+      setMessage("Cloud profile is not connected yet.");
+      return;
+    }
+    setCloudStatus("saving");
+    try {
+      const savedAt = await uploadCloudState(game);
+      setCloudLastSaved(savedAt);
+      setCloudStatus("synced");
+      setMessage("Farm saved to the cloud.");
+      showAction("●", "Cloud save complete", "success");
+    } catch {
+      setCloudStatus("error");
+      setMessage("Cloud save failed. Your browser save is still safe.");
+    }
+  }
+
+  async function updateOnlineProfile() {
+    if (!onlineProfile) return;
+    try {
+      const response = await fetch("/api/player", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ displayName: profileName }),
+      });
+      const data = (await response.json()) as { profile?: OnlineProfile; error?: string };
+      if (!response.ok || !data.profile) throw new Error(data.error || "Profile update failed.");
+      setOnlineProfile(data.profile);
+      setProfileName(data.profile.displayName);
+      setMessage(`Online farm renamed to ${data.profile.displayName}.`);
+      showAction("●", "Farm profile updated", "success");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Profile update failed.");
+    }
+  }
+
+  async function searchOnlineFarms() {
+    const query = visitQuery.trim();
+    if (!query) {
+      setMessage("Enter a farmer name or visit code first.");
+      return;
+    }
+    setVisitLoading(true);
+    try {
+      const response = await fetch(`/api/farms?q=${encodeURIComponent(query)}`, { cache: "no-store" });
+      const data = (await response.json()) as { farms?: PublicFarm[]; error?: string };
+      if (!response.ok) throw new Error(data.error || "Farm search failed.");
+      const farms = data.farms ?? [];
+      setVisitResults(farms);
+      setVisitedFarm(farms[0] ?? null);
+      setMessage(farms.length ? `${farms.length} online farm${farms.length === 1 ? "" : "s"} found.` : "No online farms matched that name or code.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Farm search failed.");
+    } finally {
+      setVisitLoading(false);
+    }
+  }
+
+  async function copyVisitCode() {
+    if (!onlineProfile) return;
+    try {
+      await navigator.clipboard.writeText(onlineProfile.visitCode);
+      setMessage(`Visit code ${onlineProfile.visitCode} copied.`);
+      showAction("●", "Visit code copied", "success");
+    } catch {
+      setMessage(`Your visit code is ${onlineProfile.visitCode}.`);
+    }
   }
 
   function placeAnimalInSlot(animalId: string, slot: number) {
@@ -964,7 +1153,7 @@ export default function Home() {
             ? "Choose the bloodline yourself."
             : view === "upgrades"
               ? "Grow from meadow to menagerie."
-              : "A wider world is coming.";
+              : "Visit farms across the meadow.";
   const resultClass =
     result?.kind === "animal"
       ? result.animal.variant
@@ -1011,15 +1200,24 @@ export default function Home() {
             <Coins aria-hidden="true" />
             <span><small>TEST</small>+100,000</span>
           </button>
-          <button className="profile-button" type="button">
-            LV. 3
+          <button
+            className={`profile-button cloud-${cloudStatus}`}
+            type="button"
+            onClick={() => openView("visit")}
+            title="Open online farm profile"
+          >
+            {cloudStatus === "local" || cloudStatus === "error" ? <CloudOff /> : <Cloud />}
+            <span>
+              <strong>{onlineProfile?.displayName ?? "Local Farm"}</strong>
+              <small>{cloudStatus === "synced" ? "Cloud saved" : cloudStatus === "saving" ? "Saving…" : cloudStatus === "connecting" ? "Connecting…" : "Local save"}</small>
+            </span>
           </button>
         </div>
       </header>
 
       <section className="hero-strip">
         <div>
-          <p className="eyebrow">Core Game Alpha · Collection Season 1</p>
+          <p className="eyebrow">Online Farm Beta · Collection Season 1</p>
           <h1>{heroTitle}</h1>
         </div>
         <button className="claim-button" type="button" onClick={claimIncome}>
@@ -2009,36 +2207,141 @@ export default function Home() {
           <section className="farm-card manage-card wide-card">
             <div className="section-heading">
               <div>
-                <p className="eyebrow">Multiplayer preview</p>
-                <h2>Visit another farm</h2>
+                <p className="eyebrow">Online Farm Beta</p>
+                <h2>Cloud profile and farm visits</h2>
               </div>
-              <span className="count-badge muted-badge">Database next</span>
+              <span className={`count-badge cloud-status-badge cloud-${cloudStatus}`}>
+                {cloudStatus === "local" || cloudStatus === "error" ? <CloudOff /> : <Cloud />}
+                {cloudStatus === "synced" ? "Cloud saved" : cloudStatus === "saving" ? "Saving…" : cloudStatus === "connecting" ? "Connecting…" : "Local mode"}
+              </span>
             </div>
-            <div className="visit-preview">
-              <div className="visit-landscape">
-                <CreatureArt speciesId="cow" variant="golden" size="large" />
-                <CreatureArt speciesId="dragon" variant="mystic" size="large" />
+            {onlineProfile ? (
+              <>
+                <div className="online-profile-card">
+                  <div className="online-profile-identity">
+                    <span><Cloud /></span>
+                    <div>
+                      <small>Your online farm</small>
+                      <strong>{onlineProfile.displayName}</strong>
+                      <p>{cloudLastSaved ? `Last cloud save ${new Date(cloudLastSaved).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Preparing first cloud save…"}</p>
+                    </div>
+                  </div>
+                  <label className="online-name-field">
+                    <span>Farm name</span>
+                    <input
+                      value={profileName}
+                      maxLength={24}
+                      onChange={(event) => setProfileName(event.target.value)}
+                    />
+                  </label>
+                  <button className="online-secondary-button" type="button" onClick={updateOnlineProfile} disabled={profileName.trim() === onlineProfile.displayName}>
+                    Update name
+                  </button>
+                  <button className="visit-code-button" type="button" onClick={copyVisitCode}>
+                    <span><small>Visit code</small><strong>{onlineProfile.visitCode}</strong></span>
+                    <Copy />
+                  </button>
+                  <button className="cloud-save-now" type="button" onClick={saveCloudNow} disabled={cloudStatus === "saving"}>
+                    <Cloud /> {cloudStatus === "saving" ? "Saving…" : "Save now"}
+                  </button>
+                </div>
+
+                <section className="online-visit-section">
+                  <div className="online-search-heading">
+                    <div>
+                      <p className="eyebrow">Find a farmer</p>
+                      <h3>Visit a read-only farm</h3>
+                    </div>
+                    <small>Search by farm name or exact visit code</small>
+                  </div>
+                  <div className="online-farm-search">
+                    <Search aria-hidden="true" />
+                    <input
+                      value={visitQuery}
+                      onChange={(event) => setVisitQuery(event.target.value)}
+                      onKeyDown={(event) => { if (event.key === "Enter") void searchOnlineFarms(); }}
+                      placeholder="Example: SUNNY123 or Sunnybrook"
+                    />
+                    <button type="button" onClick={searchOnlineFarms} disabled={visitLoading}>
+                      {visitLoading ? "Searching…" : "Search farms"}
+                    </button>
+                  </div>
+
+                  <div className="online-farm-browser">
+                    <div className="online-farm-results">
+                      <div className="online-results-label">
+                        <span>Search results</span>
+                        <strong>{visitResults.length}</strong>
+                      </div>
+                      {visitResults.length ? visitResults.map((farm) => (
+                        <button
+                          className={visitedFarm?.visitCode === farm.visitCode ? "active" : ""}
+                          type="button"
+                          onClick={() => setVisitedFarm(farm)}
+                          key={farm.visitCode}
+                        >
+                          <span><House /></span>
+                          <div>
+                            <strong>{farm.displayName}</strong>
+                            <small>{farm.visitCode} · {farm.incomeRate.toLocaleString()} coins/min</small>
+                          </div>
+                          <b>{farm.animalCount} creatures</b>
+                        </button>
+                      )) : (
+                        <div className="online-results-empty">
+                          <Search />
+                          <strong>Find your first farm</strong>
+                          <small>Ask another player for their visit code.</small>
+                        </div>
+                      )}
+                    </div>
+
+                    {visitedFarm ? (
+                      <article className={`visited-farm-card border-${visitedFarm.activeBorder}`}>
+                        <header>
+                          <div>
+                            <small>Visiting · {visitedFarm.visitCode}</small>
+                            <h3>{visitedFarm.displayName}</h3>
+                            <p><Fence /> {BORDERS[visitedFarm.activeBorder].name}</p>
+                          </div>
+                          <span>Read only</span>
+                        </header>
+                        <div className="visited-farm-stats">
+                          <div><span>Income</span><strong>{compactNumber(visitedFarm.incomeRate)}/min</strong></div>
+                          <div><span>Creatures</span><strong>{visitedFarm.animalCount}</strong></div>
+                          <div><span>Species</span><strong>{visitedFarm.speciesCount}</strong></div>
+                        </div>
+                        <div className="visited-habitats">
+                          {visitedFarm.activeAnimals.length ? visitedFarm.activeAnimals.map((animal, index) => (
+                            <div className={`visited-animal variant-${animal.variant}`} key={`${animal.speciesId}-${animal.activeSlot}-${index}`}>
+                              <CreatureArt speciesId={animal.speciesId} variant={animal.variant} size="small" />
+                              <strong>{SPECIES[animal.speciesId].name}</strong>
+                              <small>{VARIANTS[animal.variant].name} · Lv.{animal.level}</small>
+                            </div>
+                          )) : <div className="visited-empty">This farmer has no active creatures yet.</div>}
+                        </div>
+                        <footer>Updated {new Date(visitedFarm.updatedAt).toLocaleString()}</footer>
+                      </article>
+                    ) : (
+                      <div className="online-visit-placeholder">
+                        <Globe2 />
+                        <h3>Select a farm to visit</h3>
+                        <p>Its active creatures, equipped border, and collection progress will appear here.</p>
+                      </div>
+                    )}
+                  </div>
+                </section>
+              </>
+            ) : (
+              <div className="online-connecting-card">
+                {cloudStatus === "connecting" ? <Cloud /> : <CloudOff />}
+                <div>
+                  <h3>{cloudStatus === "connecting" ? "Connecting your farm…" : "Cloud profile unavailable"}</h3>
+                  <p>{cloudStatus === "connecting" ? "Your existing browser save will be copied safely when the connection is ready." : "You can keep playing locally. Cloud sync will retry when the game opens again."}</p>
+                </div>
               </div>
-              <div>
-                <h3>Cloud save will unlock visiting</h3>
-                <p>
-                  The playable loop is browser-local today. Supabase is the
-                  planned free-tier backend for accounts, saved farms, profiles,
-                  and read-only visits.
-                </p>
-                <ul>
-                  <li>
-                    See a friend&apos;s active animals and equipped border.
-                  </li>
-                  <li>Compare income and collection discoveries.</li>
-                  <li>Leave a lightweight guest-book reaction later.</li>
-                </ul>
-              </div>
-            </div>
-            <p className="status-message">
-              No crop farming—animals, collecting, merging, decorating, and
-              social discovery stay at the center.
-            </p>
+            )}
+            <p className="status-message">{message}</p>
           </section>
         )}
       </div>
