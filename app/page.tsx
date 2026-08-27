@@ -62,6 +62,7 @@ export default function Home() {
   const [farmAnimalId, setFarmAnimalId] = useState<string | null>(null);
   const [slotPicker, setSlotPicker] = useState<number | null>(null);
   const [movingAnimalId, setMovingAnimalId] = useState<string | null>(null);
+  const [selectedMergeIds, setSelectedMergeIds] = useState<string[]>([]);
   const [isSummoning, setIsSummoning] = useState(false);
 
   useEffect(() => {
@@ -87,15 +88,14 @@ export default function Home() {
   const selectedAnimal = game.animals.find((animal) => animal.id === selectedId) ?? null;
   const farmAnimal = game.animals.find((animal) => animal.id === farmAnimalId) ?? null;
   const comparisonAnimal = selectedAnimal ? game.animals.filter((animal) => animal.id !== selectedAnimal.id && animal.speciesId === selectedAnimal.speciesId).sort((a, b) => animalIncomePerMinute(b) - animalIncomePerMinute(a))[0] : undefined;
-  const mergeGroups = useMemo(() => {
-    const groups = new Map<string, AnimalInstance[]>();
-    for (const animal of game.animals) {
-      if (animal.locked || animal.activeSlot !== null) continue;
-      const key = `${animal.speciesId}:${animal.variant}`;
-      groups.set(key, [...(groups.get(key) ?? []), animal]);
-    }
-    return [...groups.values()].filter((group) => group.length >= 3);
-  }, [game.animals]);
+  const mergeEligible = game.animals.filter((animal) => !animal.locked && animal.activeSlot === null);
+  const selectedMergeAnimals = selectedMergeIds
+    .map((id) => game.animals.find((animal) => animal.id === id))
+    .filter((animal): animal is AnimalInstance => Boolean(animal));
+  const mergeTemplate = selectedMergeAnimals[0];
+  const compatibleMergeCount = mergeTemplate
+    ? mergeEligible.filter((animal) => animal.speciesId === mergeTemplate.speciesId && animal.variant === mergeTemplate.variant).length
+    : 0;
 
   function claimIncome() {
     if (pendingIncome <= 0) { setMessage('Your animals are still gathering coins.'); return; }
@@ -172,7 +172,7 @@ export default function Home() {
     if (target.activeSlot !== null) { storeAnimal(animalId); return; }
     const used = new Set(game.animals.map((animal) => animal.activeSlot).filter((slot) => slot !== null));
     const free = Array.from({ length: FARM_SLOTS }, (_, index) => index).find((slot) => !used.has(slot));
-    if (free === undefined) { setMessage('All habitats are occupied. Use the Farm screen to choose an animal to swap.'); setView('farm'); return; }
+    if (free === undefined) { setMessage('All habitats are occupied. Use the Farm screen to choose an animal to swap.'); openView('farm'); return; }
     placeAnimalInSlot(animalId, free);
   }
 
@@ -185,12 +185,34 @@ export default function Home() {
     setMessage(`${animalName(animal)} reached level ${animal.level + 1}.`);
   }
 
-  function performMerge(group: AnimalInstance[]) {
-    const parents = group.slice(0, 3);
+  function toggleMergeAnimal(animal: AnimalInstance) {
+    if (selectedMergeIds.includes(animal.id)) {
+      setSelectedMergeIds((current) => current.filter((id) => id !== animal.id));
+      setMessage(`${animalName(animal)} removed from the merge tray.`);
+      return;
+    }
+    if (selectedMergeIds.length >= 3) {
+      setMessage('The merge tray is full. Remove one animal before choosing another.');
+      return;
+    }
+    if (mergeTemplate && (animal.speciesId !== mergeTemplate.speciesId || animal.variant !== mergeTemplate.variant)) {
+      setMessage(`Choose another ${animalName(mergeTemplate)}. Merge parents must match.`);
+      return;
+    }
+    setSelectedMergeIds((current) => [...current, animal.id]);
+    setMessage(`${animalName(animal)} added as parent ${selectedMergeIds.length + 1} of 3.`);
+  }
+
+  function performMerge() {
+    if (selectedMergeAnimals.length !== 3) {
+      setMessage(`Choose ${3 - selectedMergeAnimals.length} more matching animal${selectedMergeAnimals.length === 2 ? '' : 's'} first.`);
+      return;
+    }
+    const parents = selectedMergeAnimals;
     const merged = mergeAnimals(parents, Math.random, newId('merge'), now);
     const ids = new Set(parents.map((animal) => animal.id));
     setGame((current) => ({ ...current, animals: [...current.animals.filter((animal) => !ids.has(animal.id)), merged], fusionDust: current.fusionDust + 5 }));
-    setSelectedId(merged.id); setResult({ kind: 'animal', animal: merged }); setMessage(`Merge complete: ${animalName(merged)} with Potential ${merged.potential}.`);
+    setSelectedMergeIds([]); setSelectedId(merged.id); setResult({ kind: 'animal', animal: merged }); setMessage(`Merge complete: ${animalName(merged)} with Potential ${merged.potential}.`);
   }
 
   function equipBorder(borderId: BorderId) {
@@ -199,29 +221,34 @@ export default function Home() {
   }
 
   function resetPrototype() {
-    setGame(createInitialGameState(Date.now())); setView('farm'); setSelectedId(null); setResult(null);
+    setGame(createInitialGameState(Date.now())); setView('farm'); setSelectedId(null); setSelectedMergeIds([]); setResult(null);
     setMessage('Prototype reset. Your starter animals are ready.');
+  }
+
+  function openView(nextView: View) {
+    setView(nextView);
+    window.requestAnimationFrame(() => document.getElementById('game-content')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
 
   const heroTitle = view === 'farm' ? 'Your farm should feel alive.' : view === 'summon' ? 'Ring for the extraordinary.' : view === 'animals' ? 'Every copy has a story.' : view === 'merge' ? 'Three become something better.' : 'A wider world is coming.';
 
   return <main className="game-shell">
     <header className="topbar">
-      <button className="brand brand-button" type="button" onClick={() => setView('farm')} aria-label="Open GachaFarm"><span className="brand-mark">GF</span><span><strong>GachaFarm</strong><small>Raise the impossible</small></span></button>
+      <button className="brand brand-button" type="button" onClick={() => openView('farm')} aria-label="Open GachaFarm"><span className="brand-mark">GF</span><span><strong>GachaFarm</strong><small>Raise the impossible</small></span></button>
       <div className="resources" aria-label="Farm resources"><span className="resource-pill coin-pill"><b>●</b> {game.coins.toLocaleString()}</span><span className="resource-pill" title="Discovery Stars"><b>✦</b> {game.discoveryStars}</span><span className="resource-pill" title="Fusion Dust"><b>◇</b> {game.fusionDust}</span><button className="profile-button" type="button">LV. 3</button></div>
     </header>
 
     <section className="hero-strip"><div><p className="eyebrow">Meadow League · Local prototype</p><h1>{heroTitle}</h1></div><button className="claim-button" type="button" onClick={claimIncome}><span>{pendingIncome > 0 ? 'Idle income ready' : 'Animals are producing'}</span><strong>{pendingIncome > 0 ? `Claim ${pendingIncome.toLocaleString()} coins` : `${incomeRate} coins/min`}</strong></button></section>
 
-    <div className="game-layout">
+    <div className="game-layout" id="game-content">
       <nav className="side-nav" aria-label="Game navigation">
-        {([['farm','⌂','Farm'],['summon','✦','Summon'],['animals','▦','Animals'],['merge','⌁','Merge'],['visit','♧','Visit']] as [View,string,string][]).map(([id, icon, label]) => <button key={id} className={view === id ? 'active' : ''} type="button" onClick={() => setView(id)}><span>{icon}</span>{label}</button>)}
+        {([['farm','⌂','Farm'],['summon','✦','Summon'],['animals','▦','Animals'],['merge','⌁','Merge'],['visit','♧','Visit']] as [View,string,string][]).map(([id, icon, label]) => <button key={id} className={view === id ? 'active' : ''} type="button" onClick={() => openView(id)}><span>{icon}</span>{label}</button>)}
       </nav>
 
       {view === 'farm' && <section className="farm-card wide-card" aria-labelledby="farm-title">
         <div className="farm-heading"><div><p className="eyebrow">Active habitat · {game.animals.filter((animal) => animal.activeSlot !== null).length}/{FARM_SLOTS}</p><h2 id="farm-title">Sunnybrook Farm</h2><small className="border-label">{activeBorder.icon} {activeBorder.name} · {activeBorder.description}</small></div><div className="income-rate"><span>Farm income</span><strong>{incomeRate} coins/min</strong></div></div>
         {movingAnimalId && <div className="move-mode"><span>↔ Click a habitat to move or swap {animalName(game.animals.find((animal) => animal.id === movingAnimalId)!)}.</span><button type="button" onClick={() => setMovingAnimalId(null)}>Cancel</button></div>}
-        <div className="farm-field"><div className="sun" aria-hidden="true"/><div className="cloud cloud-one" aria-hidden="true"/><div className="cloud cloud-two" aria-hidden="true"/><div className="barn" aria-hidden="true"><span className="barn-roof"/><span className="barn-body"><i/></span></div>
+        <div className={`farm-field border-${game.activeBorder}`}><div className="sun" aria-hidden="true"/><div className="cloud cloud-one" aria-hidden="true"/><div className="cloud cloud-two" aria-hidden="true"/><div className="barn" aria-hidden="true"><span className="barn-roof"/><span className="barn-body"><i/></span></div><div className="farm-border-frame" aria-hidden="true"><span>{activeBorder.icon}</span><span>{activeBorder.icon}</span><span>{activeBorder.icon}</span><span>{activeBorder.icon}</span></div><div className="equipped-border-flag"><span>{activeBorder.icon}</span><div><small>Equipped border</small><strong>{activeBorder.name}</strong></div></div>
           <div className="animal-grid">{activeAnimals.map((animal, index) => <button className={`animal-slot ${animal ? 'occupied' : ''} ${movingAnimalId ? 'move-target' : ''}`} type="button" key={index} onClick={() => handleFarmSlot(index, animal)}>
             {animal ? <><span className={`variant-tag ${animal.variant}`}>{VARIANTS[animal.variant].name}</span>{animal.locked && <span className="lock-corner">◆</span>}<span className="animal-stage"><span className="animal-shadow"/><span className="animal-emoji active-animal" style={{ animationDelay: `${-index * .37}s` }} role="img" aria-label={SPECIES[animal.speciesId].name}>{SPECIES[animal.speciesId].emoji}</span></span><strong>{SPECIES[animal.speciesId].name}</strong><small>+{animalIncomePerMinute(animal)}/min · P{animal.potential}</small></> : <><span className="empty-plus">+</span><strong>Empty habitat</strong><small>Click to place an animal</small></>}
           </button>)}</div>
@@ -237,7 +264,7 @@ export default function Home() {
           </div>
           <button className="summon-main-button" type="button" disabled={isSummoning} onClick={performSummon}><span>{isSummoning ? 'The magic is gathering…' : banner === 'creature' ? 'Ring the Creature Bell' : 'Forge a Farm Border'}</span><strong>● {(banner === 'creature' ? SUMMON_COST : BORDER_SUMMON_COST).toLocaleString()}</strong></button>
           <p className="rate-note">Rates shown are exact for this prototype. Summons are purchased only with earned game coins.</p>
-          <div className="border-collection"><div className="section-heading compact"><div><p className="eyebrow">Owned styles</p><h3>Your farm borders</h3></div><span className="count-badge">{game.ownedBorders.length}/{Object.keys(BORDERS).length}</span></div><div className="border-grid">{game.ownedBorders.map((id) => <article className={game.activeBorder === id ? 'active' : ''} key={id}><span>{BORDERS[id].icon}</span><div><strong>{BORDERS[id].name}</strong><small>{BORDERS[id].description}</small></div><button type="button" disabled={game.activeBorder === id} onClick={() => equipBorder(id)}>{game.activeBorder === id ? 'Equipped' : 'Equip'}</button></article>)}</div></div>
+          <div className="border-collection"><div className="section-heading compact"><div><p className="eyebrow">Owned styles</p><h3>Your farm borders</h3></div><span className="count-badge">{game.ownedBorders.length}/{Object.keys(BORDERS).length}</span></div><div className="border-grid">{game.ownedBorders.map((id) => <article className={game.activeBorder === id ? 'active' : ''} key={id}><div className={`border-swatch border-${id}`}><span>{BORDERS[id].icon}</span></div><div><strong>{BORDERS[id].name}</strong><small>{BORDERS[id].description}</small></div><button type="button" disabled={game.activeBorder === id} onClick={() => equipBorder(id)}>{game.activeBorder === id ? 'Equipped' : 'Equip'}</button></article>)}</div></div>
         </div><p className="status-message" role="status">{message}</p>
       </section>}
 
@@ -247,16 +274,19 @@ export default function Home() {
         <div className="collection-grid">{game.animals.map((animal) => <AnimalCard key={animal.id} animal={animal} selected={selectedId === animal.id} onSelect={() => setSelectedId(animal.id)}/>)}</div><p className="status-message" role="status">{message}</p>
       </section>}
 
-      {view === 'merge' && <section className="farm-card manage-card wide-card"><div className="section-heading"><div><p className="eyebrow">Safe species merge</p><h2>Merge lab</h2></div><span className="count-badge">◇ {game.fusionDust}</span></div><div className="merge-explainer"><span>Same species</span><b>+</b><span>Same variant</span><b>+</b><span>3 in storage</span><b>→</b><span>Stronger offspring</span></div>{mergeGroups.length ? <div className="merge-list">{mergeGroups.map((group) => <article className="merge-option" key={`${group[0].speciesId}:${group[0].variant}`}><div><strong>{animalName(group[0])}</strong><p>Uses the first three eligible animals. Natural animals have a 35% Golden upgrade chance.</p></div><div className="merge-animals">{group.slice(0,3).map((animal) => <span key={animal.id}>{SPECIES[animal.speciesId].emoji}<small>P{animal.potential}</small></span>)}<b>→</b><span className="mystery-result">?</span></div><button className="merge-button" type="button" onClick={() => performMerge(group)}>Merge 3</button></article>)}</div> : <div className="empty-state"><span>⌁</span><h3>No merge group ready</h3><p>You need three unlocked, inactive animals with the same species and variant.</p><button type="button" onClick={() => setView('summon')}>Open Summon Hall</button></div>}<p className="status-message">{message}</p></section>}
+      {view === 'merge' && <section className="farm-card manage-card wide-card"><div className="section-heading"><div><p className="eyebrow">Manual species merge</p><h2>Choose your three parents</h2></div><span className="count-badge">◇ {game.fusionDust}</span></div><div className="merge-explainer"><span>1. Pick an animal</span><b>→</b><span>2. Pick two matching copies</span><b>→</b><span>3. Confirm merge</span></div>
+        <div className="merge-workbench"><section className="merge-tray" aria-label="Selected merge parents"><div className="merge-tray-heading"><div><span>Merge tray</span><strong>{selectedMergeAnimals.length}/3 selected</strong></div>{selectedMergeAnimals.length > 0 && <button type="button" onClick={() => setSelectedMergeIds([])}>Clear all</button>}</div><div className="merge-slots">{Array.from({ length: 3 }, (_, index) => { const animal = selectedMergeAnimals[index]; return <div className={animal ? 'filled' : ''} key={index}><span className="merge-slot-number">{index + 1}</span>{animal ? <><span className="merge-slot-emoji">{SPECIES[animal.speciesId].emoji}</span><strong>{animalName(animal)}</strong><small>P{animal.potential} · +{animalIncomePerMinute(animal)}/min</small><button type="button" onClick={() => toggleMergeAnimal(animal)}>Remove</button></> : <><span className="merge-slot-plus">+</span><strong>Choose parent {index + 1}</strong><small>{mergeTemplate ? `Needs ${animalName(mergeTemplate)}` : 'Any stored animal'}</small></>}</div>; })}<span className="merge-arrow">→</span><div className="merge-result-preview"><span>?</span><strong>{mergeTemplate ? animalName(mergeTemplate) : 'New offspring'}</strong><small>Best parent stats · possible upgrade</small></div></div><button className="confirm-merge-button" type="button" disabled={selectedMergeAnimals.length !== 3} onClick={performMerge}>{selectedMergeAnimals.length === 3 ? 'Merge these 3 animals' : `Choose ${3 - selectedMergeAnimals.length} more`}</button></section>
+          <section className="merge-picker"><div className="merge-picker-heading"><div><span>Eligible storage</span><strong>{mergeEligible.length} unlocked animals</strong></div>{mergeTemplate && <small>{compatibleMergeCount} matching {animalName(mergeTemplate)} owned</small>}</div>{mergeEligible.length ? <div className="merge-select-grid">{mergeEligible.map((animal) => { const selectedIndex = selectedMergeIds.indexOf(animal.id); const compatible = !mergeTemplate || (animal.speciesId === mergeTemplate.speciesId && animal.variant === mergeTemplate.variant); return <button type="button" className={`${selectedIndex >= 0 ? 'selected' : ''} ${!compatible ? 'incompatible' : ''}`} key={animal.id} onClick={() => toggleMergeAnimal(animal)} aria-pressed={selectedIndex >= 0}><span className="merge-check">{selectedIndex >= 0 ? selectedIndex + 1 : '+'}</span><span className="merge-pick-emoji">{SPECIES[animal.speciesId].emoji}</span><strong>{animalName(animal)}</strong><small>Level {animal.level} · Potential {animal.potential}</small><span className="merge-pick-stats">Yield {animal.yieldStat} · Tempo {animal.tempoStat}</span></button>; })}</div> : <div className="empty-state"><span>⌁</span><h3>No eligible animals</h3><p>Move animals to storage and unlock them before merging.</p><button type="button" onClick={() => openView('animals')}>Open Animals</button></div>}</section>
+        </div><p className="status-message">{message}</p></section>}
 
       {view === 'visit' && <section className="farm-card manage-card wide-card"><div className="section-heading"><div><p className="eyebrow">Multiplayer preview</p><h2>Visit another farm</h2></div><span className="count-badge muted-badge">Database next</span></div><div className="visit-preview"><div className="visit-landscape"><span>🐮</span><span>🐉</span></div><div><h3>Cloud save will unlock visiting</h3><p>The playable loop is browser-local today. Supabase is the planned free-tier backend for accounts, saved farms, profiles, and read-only visits.</p><ul><li>See a friend&apos;s active animals and equipped border.</li><li>Compare income and collection discoveries.</li><li>Leave a lightweight guest-book reaction later.</li></ul></div></div><p className="status-message">No crop farming—animals, collecting, merging, decorating, and social discovery stay at the center.</p></section>}
     </div>
 
     {slotPicker !== null && <div className="modal-backdrop" role="presentation" onMouseDown={() => setSlotPicker(null)}><section className="picker-modal" role="dialog" aria-modal="true" aria-labelledby="picker-title" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" type="button" onClick={() => setSlotPicker(null)}>×</button><p className="eyebrow">Habitat {slotPicker + 1}</p><h2 id="picker-title">Choose an animal to place</h2><p className="modal-intro">Pick directly from storage. You can move it again by clicking its farm habitat.</p>{storageAnimals.length ? <div className="picker-list">{storageAnimals.map((animal) => <button type="button" key={animal.id} onClick={() => placeAnimalInSlot(animal.id, slotPicker)}><span>{SPECIES[animal.speciesId].emoji}</span><div><strong>{animalName(animal)}</strong><small>Level {animal.level} · P{animal.potential}</small></div><b>+{animalIncomePerMinute(animal)}/min</b></button>)}</div> : <div className="empty-state"><span>▦</span><h3>Storage is empty</h3><p>Summon another creature or move an active animal.</p></div>}</section></div>}
 
-    {farmAnimal && <div className="modal-backdrop" role="presentation" onMouseDown={() => setFarmAnimalId(null)}><section className="picker-modal animal-modal" role="dialog" aria-modal="true" aria-labelledby="farm-animal-title" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" type="button" onClick={() => setFarmAnimalId(null)}>×</button><div className="detail-identity"><span>{SPECIES[farmAnimal.speciesId].emoji}</span><div><small>Habitat {(farmAnimal.activeSlot ?? 0) + 1}</small><h2 id="farm-animal-title">{animalName(farmAnimal)}</h2><p>{SPECIES[farmAnimal.speciesId].rank} · Level {farmAnimal.level} · Potential {farmAnimal.potential}</p></div></div><div className="production-strip"><span>Production</span><strong>+{animalIncomePerMinute(farmAnimal)} coins/min</strong></div><h4>Genetic stats</h4><StatGrid animal={farmAnimal}/><div className="modal-action-row"><button type="button" onClick={() => storeAnimal(farmAnimal.id)}>Move to storage</button><button className="primary-small" type="button" onClick={() => beginMove(farmAnimal.id)}>Move or swap</button><button type="button" onClick={() => { setSelectedId(farmAnimal.id); setFarmAnimalId(null); setView('animals'); }}>Full details</button></div></section></div>}
+    {farmAnimal && <div className="modal-backdrop" role="presentation" onMouseDown={() => setFarmAnimalId(null)}><section className="picker-modal animal-modal" role="dialog" aria-modal="true" aria-labelledby="farm-animal-title" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" type="button" onClick={() => setFarmAnimalId(null)}>×</button><div className="detail-identity"><span>{SPECIES[farmAnimal.speciesId].emoji}</span><div><small>Habitat {(farmAnimal.activeSlot ?? 0) + 1}</small><h2 id="farm-animal-title">{animalName(farmAnimal)}</h2><p>{SPECIES[farmAnimal.speciesId].rank} · Level {farmAnimal.level} · Potential {farmAnimal.potential}</p></div></div><div className="production-strip"><span>Production</span><strong>+{animalIncomePerMinute(farmAnimal)} coins/min</strong></div><h4>Genetic stats</h4><StatGrid animal={farmAnimal}/><div className="modal-action-row"><button type="button" onClick={() => storeAnimal(farmAnimal.id)}>Move to storage</button><button className="primary-small" type="button" onClick={() => beginMove(farmAnimal.id)}>Move or swap</button><button type="button" onClick={() => { setSelectedId(farmAnimal.id); setFarmAnimalId(null); openView('animals'); }}>Full details</button></div></section></div>}
 
-    {result && <div className="modal-backdrop" role="presentation" onMouseDown={() => setResult(null)}><section className={`result-modal ${result.kind === 'animal' ? result.animal.variant : BORDERS[result.borderId].rarity.toLowerCase()}`} role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" type="button" onClick={() => setResult(null)}>×</button>{result.kind === 'animal' ? <><p className="eyebrow">The bell answered</p><span className="result-emoji">{SPECIES[result.animal.speciesId].emoji}</span><span className="result-rank">{SPECIES[result.animal.speciesId].rank} · {VARIANTS[result.animal.variant].name}</span><h2>{animalName(result.animal)}</h2><p>Potential {result.animal.potential} · Level 1</p><StatGrid animal={result.animal}/><div className="result-actions"><button type="button" onClick={() => { setResult(null); setView('animals'); }}>View animal</button><button type="button" onClick={() => setResult(null)}>Keep in storage</button></div></> : <><p className="eyebrow">Border Forge reward</p><span className="result-emoji">{BORDERS[result.borderId].icon}</span><span className="result-rank">{BORDERS[result.borderId].rarity}</span><h2>{BORDERS[result.borderId].name}</h2><p>{result.duplicate ? 'Duplicate converted into 15 Fusion Dust.' : BORDERS[result.borderId].description}</p><div className="result-actions"><button type="button" disabled={result.duplicate} onClick={() => { equipBorder(result.borderId); setResult(null); }}>{result.duplicate ? 'Already owned' : 'Equip now'}</button><button type="button" onClick={() => setResult(null)}>Close</button></div></>}</section></div>}
+    {result && <div className="modal-backdrop" role="presentation" onMouseDown={() => setResult(null)}><section className={`result-modal ${result.kind === 'animal' ? result.animal.variant : BORDERS[result.borderId].rarity.toLowerCase()}`} role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" type="button" onClick={() => setResult(null)}>×</button>{result.kind === 'animal' ? <><p className="eyebrow">The bell answered</p><span className="result-emoji">{SPECIES[result.animal.speciesId].emoji}</span><span className="result-rank">{SPECIES[result.animal.speciesId].rank} · {VARIANTS[result.animal.variant].name}</span><h2>{animalName(result.animal)}</h2><p>Potential {result.animal.potential} · Level 1</p><StatGrid animal={result.animal}/><div className="result-actions"><button type="button" onClick={() => { setResult(null); openView('animals'); }}>View animal</button><button type="button" onClick={() => setResult(null)}>Keep in storage</button></div></> : <><p className="eyebrow">Border Forge reward</p><span className="result-emoji">{BORDERS[result.borderId].icon}</span><span className="result-rank">{BORDERS[result.borderId].rarity}</span><h2>{BORDERS[result.borderId].name}</h2><p>{result.duplicate ? 'Duplicate converted into 15 Fusion Dust.' : BORDERS[result.borderId].description}</p><div className="result-actions"><button type="button" disabled={result.duplicate} onClick={() => { equipBorder(result.borderId); setResult(null); }}>{result.duplicate ? 'Already owned' : 'Equip now'}</button><button type="button" onClick={() => setResult(null)}>Close</button></div></>}</section></div>}
 
     <footer><span>Prototype v0.2 · saved in this browser</span><button type="button" onClick={resetPrototype}>Reset prototype</button></footer>
   </main>;
