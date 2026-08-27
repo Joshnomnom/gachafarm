@@ -4,6 +4,7 @@ import {
   SPECIES,
   VARIANTS,
   animalIncomePerMinute,
+  autoPlaceBestAnimals,
   claimableIncome,
   createInitialGameState,
   farmIncomePerMinute,
@@ -100,5 +101,17 @@ describe('GachaFarm domain rules', () => {
 
   it('ships five collectible visual variants', () => {
     expect(Object.keys(VARIANTS)).toEqual(['natural', 'bronze', 'golden', 'diamond', 'mystic']);
+  });
+
+  it('auto-places only the highest-producing animals', () => {
+    const animals = [
+      makeAnimal('natural', 'chicken', 'natural', 1, { activeSlot: 0 }),
+      makeAnimal('golden', 'cow', 'golden', 2),
+      makeAnimal('dragon', 'dragon', 'natural', 3),
+    ];
+    const placed = autoPlaceBestAnimals(animals, 2);
+    expect(placed.find((animal) => animal.id === 'dragon')?.activeSlot).toBe(0);
+    expect(placed.find((animal) => animal.id === 'golden')?.activeSlot).toBe(1);
+    expect(placed.find((animal) => animal.id === 'natural')?.activeSlot).toBeNull();
   });
 });

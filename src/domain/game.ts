@@ -60,10 +60,10 @@ export const BORDERS: Record<BorderId, BorderDefinition> = {
 };
 
 export const UPGRADES: Record<UpgradeId, UpgradeDefinition> = {
-  habitat: { id:'habitat', name:'Habitat Expansion', icon:'⌂', description:'+3 active animal slots per level.', maxLevel:3, baseCost:2400 },
-  production: { id:'production', name:'Feed Workshop', icon:'⚙', description:'+10% total farm income per level.', maxLevel:5, baseCost:1800 },
-  offline: { id:'offline', name:'Bigger Coin Silo', icon:'◷', description:'+2 hours offline-income capacity per level.', maxLevel:5, baseCost:1400 },
-  luck: { id:'luck', name:'Lucky Bell Polish', icon:'✦', description:'+1% premium variant chance per level.', maxLevel:5, baseCost:2200 },
+  habitat: { id:'habitat', name:'Habitat Expansion', icon:'⌂', description:'+3 active animal slots per level.', maxLevel:3, baseCost:7500 },
+  production: { id:'production', name:'Feed Workshop', icon:'⚙', description:'+10% total farm income per level.', maxLevel:5, baseCost:5500 },
+  offline: { id:'offline', name:'Bigger Coin Silo', icon:'◷', description:'+2 hours offline-income capacity per level.', maxLevel:5, baseCost:4200 },
+  luck: { id:'luck', name:'Lucky Bell Polish', icon:'✦', description:'+1% premium variant chance per level.', maxLevel:5, baseCost:8000 },
 };
 
 const allSpecies = Object.values(SPECIES);
@@ -100,9 +100,14 @@ export function migrateGameState(value:unknown,now:number):GameState|null{
 export function farmSlotCount(state:GameState){ return BASE_FARM_SLOTS+(state.upgrades.habitat-1)*3; }
 export function offlineCapMs(state:GameState){ return BASE_OFFLINE_CAP_MS+(state.upgrades.offline-1)*2*60*60*1000; }
 export function productionMultiplier(state:GameState){ return 1+(state.upgrades.production-1)*.1; }
-export function upgradeCost(id:UpgradeId,level:number){ return Math.round(UPGRADES[id].baseCost*Math.pow(1.72,level-1)); }
+export function upgradeCost(id:UpgradeId,level:number){ return Math.round(UPGRADES[id].baseCost*Math.pow(2.05,level-1)); }
 export function animalIncomePerMinute(animal:AnimalInstance){ const species=SPECIES[animal.speciesId],variant=VARIANTS[animal.variant],levelMultiplier=1+(animal.level-1)*.08; return Math.max(1,Math.round(species.baseIncome*variant.multiplier*levelMultiplier*(animal.yieldStat/100)*(animal.tempoStat/100))); }
 export function farmIncomePerMinute(animals:AnimalInstance[],multiplier=1){ return Math.round(animals.filter((animal)=>animal.activeSlot!==null).reduce((sum,animal)=>sum+animalIncomePerMinute(animal),0)*multiplier); }
+export function autoPlaceBestAnimals(animals:AnimalInstance[],slotCount:number){
+  const selected=[...animals].sort((a,b)=>animalIncomePerMinute(b)-animalIncomePerMinute(a)||b.potential-a.potential||a.createdAt-b.createdAt).slice(0,slotCount);
+  const slotById=new Map(selected.map((animal,index)=>[animal.id,index]));
+  return animals.map((animal)=>({...animal,activeSlot:slotById.get(animal.id)??null}));
+}
 export function totalFarmMultiplier(state:GameState){ return BORDERS[state.activeBorder].incomeMultiplier*productionMultiplier(state); }
 export function claimableIncome(state:GameState,now:number){ const elapsed=Math.max(0,Math.min(now-state.lastClaimedAt,offlineCapMs(state))); return Math.floor((elapsed/60000)*farmIncomePerMinute(state.animals,totalFarmMultiplier(state))); }
 

@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { type DragEvent, useEffect, useMemo, useState } from 'react';
 import {
   BORDERS, BORDER_SUMMON_COST, RANK_ORDER, SPECIES, SUMMON_COST, TEN_PULL_COST, UPGRADES, VARIANTS,
-  animalIncomePerMinute, claimableIncome, createInitialGameState, farmIncomePerMinute,
+  animalIncomePerMinute, autoPlaceBestAnimals, claimableIncome, createInitialGameState, farmIncomePerMinute,
   farmSlotCount, mergeAnimals, migrateGameState, summonAnimal, summonBorder, totalFarmMultiplier, upgradeCost,
   type AnimalInstance, type BorderId, type GameState, type SpeciesId, type UpgradeId,
 } from '../src/domain/game';
@@ -17,6 +17,10 @@ const statLabels = { yieldStat: 'Yield', tempoStat: 'Tempo', fortune: 'Fortune',
 
 function newId(prefix: string) { return `${prefix}-${crypto.randomUUID()}`; }
 function animalName(animal: AnimalInstance) { return `${VARIANTS[animal.variant].name} ${SPECIES[animal.speciesId].name}`; }
+function perSecondIncome(animal: AnimalInstance, multiplier: number) {
+  const value = animalIncomePerMinute(animal) * multiplier / 60;
+  return value < 1 ? value.toFixed(2) : value.toFixed(1);
+}
 function statDifference(value: number, comparison?: number) {
   if (comparison === undefined) return '';
   const difference = value - comparison;
@@ -71,6 +75,7 @@ export default function Home() {
   const [farmAnimalId, setFarmAnimalId] = useState<string | null>(null);
   const [slotPicker, setSlotPicker] = useState<number | null>(null);
   const [movingAnimalId, setMovingAnimalId] = useState<string | null>(null);
+  const [draggingAnimalId, setDraggingAnimalId] = useState<string | null>(null);
   const [selectedMergeIds, setSelectedMergeIds] = useState<string[]>([]);
   const [isSummoning, setIsSummoning] = useState(false);
 
@@ -97,8 +102,10 @@ export default function Home() {
   const farmSlots = farmSlotCount(game);
   const activeAnimals = useMemo(() => Array.from({ length: farmSlots }, (_, slot) => game.animals.find((animal) => animal.activeSlot === slot) ?? null), [farmSlots, game.animals]);
   const storageAnimals = game.animals.filter((animal) => animal.activeSlot === null);
+  const storageByIncome = useMemo(() => game.animals.filter((animal) => animal.activeSlot === null).sort((a, b) => animalIncomePerMinute(b) - animalIncomePerMinute(a)), [game.animals]);
   const activeBorder = BORDERS[game.activeBorder];
-  const incomeRate = farmIncomePerMinute(game.animals, totalFarmMultiplier(game));
+  const farmMultiplier = totalFarmMultiplier(game);
+  const incomeRate = farmIncomePerMinute(game.animals, farmMultiplier);
   const pendingIncome = now > 0 ? claimableIncome(game, now) : 0;
   const selectedAnimal = game.animals.find((animal) => animal.id === selectedId) ?? null;
   const farmAnimal = game.animals.find((animal) => animal.id === farmAnimalId) ?? null;
@@ -146,7 +153,33 @@ export default function Home() {
 
   function beginMove(animalId: string) {
     setFarmAnimalId(null); setMovingAnimalId(animalId);
-    setMessage('Move mode: click any habitat to move or swap this animal.');
+    setMessage('Move mode: click any habitat to place or swap this animal.');
+  }
+
+  function startAnimalDrag(event: DragEvent<HTMLElement>, animalId: string) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', animalId);
+    setDraggingAnimalId(animalId);
+  }
+
+  function dropAnimalInSlot(event: DragEvent<HTMLElement>, slot: number) {
+    event.preventDefault();
+    const animalId = draggingAnimalId || event.dataTransfer.getData('text/plain');
+    if (animalId) placeAnimalInSlot(animalId, slot);
+    setDraggingAnimalId(null);
+  }
+
+  function dropAnimalInStorage(event: DragEvent<HTMLElement>) {
+    event.preventDefault();
+    const animalId = draggingAnimalId || event.dataTransfer.getData('text/plain');
+    if (animalId) storeAnimal(animalId);
+    setDraggingAnimalId(null);
+  }
+
+  function autoPlaceFarm() {
+    setGame((current) => ({ ...current, animals: autoPlaceBestAnimals(current.animals, farmSlotCount(current)) }));
+    setFarmAnimalId(null); setMovingAnimalId(null); setDraggingAnimalId(null);
+    setMessage(`Auto Place selected your ${Math.min(farmSlots, game.animals.length)} highest-producing animals.`);
   }
 
   function performSummon(quantity: 1 | 10 = 1) {
@@ -301,13 +334,13 @@ export default function Home() {
       </nav>
 
       {view === 'farm' && <section className="farm-card wide-card" aria-labelledby="farm-title">
-        <div className="farm-heading"><div><p className="eyebrow">Active habitat · {game.animals.filter((animal) => animal.activeSlot !== null).length}/{farmSlots}</p><h2 id="farm-title">Sunnybrook Farm</h2><small className="border-label">{activeBorder.icon} {activeBorder.name} · {activeBorder.description}</small></div><div className="income-rate"><span>Farm income · Workshop Lv.{game.upgrades.production}</span><strong>{incomeRate} coins/min</strong></div></div>
-        {movingAnimalId && <div className="move-mode"><span>↔ Click a habitat to move or swap {animalName(game.animals.find((animal) => animal.id === movingAnimalId)!)}.</span><button type="button" onClick={() => setMovingAnimalId(null)}>Cancel</button></div>}
+        <div className="farm-heading"><div><p className="eyebrow">Active habitat · {game.animals.filter((animal) => animal.activeSlot !== null).length}/{farmSlots}</p><h2 id="farm-title">Sunnybrook Farm</h2><small className="border-label">{activeBorder.icon} {activeBorder.name} · {activeBorder.description}</small></div><div className="farm-heading-actions"><div className="income-rate"><span>Farm income · Workshop Lv.{game.upgrades.production}</span><strong>{incomeRate} coins/min</strong></div><button className="auto-place-button" type="button" onClick={autoPlaceFarm}><span>✦</span><b>Auto Place</b><small>Best income</small></button></div></div>
+        {movingAnimalId && <div className="move-mode"><span>↔ Click or drop on a habitat to place {animalName(game.animals.find((animal) => animal.id === movingAnimalId)!)}.</span><button type="button" onClick={() => setMovingAnimalId(null)}>Cancel</button></div>}
         <div className={`farm-field border-${game.activeBorder}`}><div className="sun" aria-hidden="true"/><div className="cloud cloud-one" aria-hidden="true"/><div className="cloud cloud-two" aria-hidden="true"/><div className="barn" aria-hidden="true"><span className="barn-roof"/><span className="barn-body"><i/></span></div><div className="farm-border-frame" aria-hidden="true"><span>{activeBorder.icon}</span><span>{activeBorder.icon}</span><span>{activeBorder.icon}</span><span>{activeBorder.icon}</span></div><div className="equipped-border-flag"><span>{activeBorder.icon}</span><div><small>Equipped border</small><strong>{activeBorder.name}</strong></div></div>
-          <div className="animal-grid">{activeAnimals.map((animal, index) => <button className={`animal-slot ${animal ? 'occupied' : ''} ${movingAnimalId ? 'move-target' : ''}`} type="button" key={index} onClick={() => handleFarmSlot(index, animal)}>
-            {animal ? <><span className={`variant-tag ${animal.variant}`}>{VARIANTS[animal.variant].name}</span>{animal.locked && <span className="lock-corner">◆</span>}<span className="animal-stage"><span className="animal-shadow"/><CreatureArt speciesId={animal.speciesId} variant={animal.variant} size="large" animated /></span><strong>{SPECIES[animal.speciesId].name}</strong><small>+{animalIncomePerMinute(animal)}/min · P{animal.potential}</small></> : <><span className="empty-plus">+</span><strong>Empty habitat</strong><small>Click to place an animal</small></>}
+          <div className="animal-grid">{activeAnimals.map((animal, index) => <button className={`animal-slot ${animal ? 'occupied' : ''} ${movingAnimalId || draggingAnimalId ? 'move-target' : ''} ${draggingAnimalId === animal?.id ? 'dragging' : ''}`} type="button" key={index} draggable={Boolean(animal)} onDragStart={animal ? (event) => startAnimalDrag(event, animal.id) : undefined} onDragEnd={() => setDraggingAnimalId(null)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; }} onDrop={(event) => dropAnimalInSlot(event, index)} onClick={() => handleFarmSlot(index, animal)} aria-label={animal ? `${animalName(animal)}, habitat ${index + 1}. Drag to move or click for details.` : `Empty habitat ${index + 1}. Drop or click to place an animal.`}>
+            {animal ? <><span className={`variant-tag ${animal.variant}`}>{VARIANTS[animal.variant].name}</span>{animal.locked && <span className="lock-corner">◆</span>}<span className="animal-stage"><span className="animal-shadow"/><CreatureArt speciesId={animal.speciesId} variant={animal.variant} size="large" animated />{now > 0 && <span className="income-pop" key={`${animal.id}-${Math.floor(now / 1000)}`} aria-hidden="true">● +{perSecondIncome(animal, farmMultiplier)}</span>}</span><strong className="farm-animal-name">{animalName(animal)}</strong><small>Habitat {index + 1} · {animalIncomePerMinute(animal)}/min · P{animal.potential}</small></> : <><span className="empty-plus">+</span><strong>Empty habitat</strong><small>Drop or click to place</small></>}
           </button>)}</div>
-        </div><p className="status-message" role="status" aria-live="polite">{message}</p>
+        </div><section className={`farm-storage ${draggingAnimalId ? 'drop-ready' : ''}`} aria-label="Farm storage" onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; }} onDrop={dropAnimalInStorage}><div className="farm-storage-heading"><div><span>Farm storage</span><strong>{storageByIncome.length} creatures waiting</strong></div><small>Drag a creature onto a habitat · drop active creatures here to store</small></div>{storageByIncome.length ? <div className="farm-storage-row">{storageByIncome.map((animal) => <button className={draggingAnimalId === animal.id ? 'dragging' : ''} type="button" draggable onDragStart={(event) => startAnimalDrag(event, animal.id)} onDragEnd={() => setDraggingAnimalId(null)} onClick={() => beginMove(animal.id)} key={animal.id}><CreatureArt speciesId={animal.speciesId} variant={animal.variant} size="small"/><span><strong>{animalName(animal)}</strong><small>+{animalIncomePerMinute(animal)}/min · tap to place</small></span><b>⠿</b></button>)}</div> : <div className="farm-storage-empty">Every owned creature is active. Drag one here to store it.</div>}</section><p className="status-message" role="status" aria-live="polite">{message}</p>
       </section>}
 
       {view === 'summon' && <section className={`summon-screen wide-card ${isSummoning ? 'summoning' : ''}`} aria-labelledby="summon-title">
@@ -334,7 +367,7 @@ export default function Home() {
           <section className="merge-picker"><div className="merge-picker-heading"><div><span>Eligible storage</span><strong>{mergeEligible.length} unlocked animals</strong></div>{mergeTemplate && <small>{compatibleMergeCount} matching {animalName(mergeTemplate)} owned</small>}</div>{mergeEligible.length ? <div className="merge-select-grid">{mergeEligible.map((animal) => { const selectedIndex = selectedMergeIds.indexOf(animal.id); const compatible = !mergeTemplate || (animal.speciesId === mergeTemplate.speciesId && animal.variant === mergeTemplate.variant); return <button type="button" className={`${selectedIndex >= 0 ? 'selected' : ''} ${!compatible ? 'incompatible' : ''}`} key={animal.id} onClick={() => toggleMergeAnimal(animal)} aria-pressed={selectedIndex >= 0}><span className="merge-check">{selectedIndex >= 0 ? selectedIndex + 1 : '+'}</span><CreatureArt speciesId={animal.speciesId} variant={animal.variant} size="small"/><strong>{animalName(animal)}</strong><small>Level {animal.level} · Potential {animal.potential}</small><span className="merge-pick-stats">Yield {animal.yieldStat} · Tempo {animal.tempoStat}</span></button>; })}</div> : <div className="empty-state"><span>⌁</span><h3>No eligible animals</h3><p>Move animals to storage and unlock them before merging.</p><button type="button" onClick={() => openView('animals')}>Open Animals</button></div>}</section>
         </div><p className="status-message">{message}</p></section>}
 
-      {view === 'upgrades' && <section className="farm-card manage-card wide-card"><div className="section-heading"><div><p className="eyebrow">Farm workshop</p><h2>Permanent upgrades</h2></div><span className="count-badge">● {game.coins.toLocaleString()}</span></div><div className="upgrade-summary"><div><span>Habitats</span><strong>{farmSlots}</strong></div><div><span>Production bonus</span><strong>+{(game.upgrades.production - 1) * 10}%</strong></div><div><span>Offline capacity</span><strong>{4 + (game.upgrades.offline - 1) * 2}h</strong></div><div><span>Premium luck</span><strong>+{game.upgrades.luck - 1}%</strong></div></div><div className="upgrade-grid">{Object.values(UPGRADES).map((upgrade) => { const level = game.upgrades[upgrade.id]; const maxed = level >= upgrade.maxLevel; const cost = upgradeCost(upgrade.id, level); return <article key={upgrade.id}><span className="upgrade-icon">{upgrade.icon}</span><div className="upgrade-copy"><small>Level {level}/{upgrade.maxLevel}</small><h3>{upgrade.name}</h3><p>{upgrade.description}</p><div className="level-pips">{Array.from({ length: upgrade.maxLevel }, (_, index) => <span className={index < level ? 'filled' : ''} key={index}/>)}</div></div><button type="button" disabled={maxed} onClick={() => purchaseUpgrade(upgrade.id)}>{maxed ? 'Max level' : <>Upgrade <b>● {cost.toLocaleString()}</b></>}</button></article>; })}</div><section className="alpha-goals"><div className="section-heading compact"><div><p className="eyebrow">Season goals</p><h3>Meadow League milestones</h3></div><span className="count-badge">Alpha</span></div><div className="goal-grid"><article><span>Own 10 creatures</span><strong>{Math.min(game.animals.length, 10)}/10</strong><progress max="10" value={Math.min(game.animals.length, 10)}/></article><article><span>Discover 5 species</span><strong>{Math.min(game.discoveredSpecies.length, 5)}/5</strong><progress max="5" value={Math.min(game.discoveredSpecies.length, 5)}/></article><article><span>Reach 200 coins/min</span><strong>{Math.min(incomeRate, 200)}/200</strong><progress max="200" value={Math.min(incomeRate, 200)}/></article></div></section><p className="status-message">{message}</p></section>}
+      {view === 'upgrades' && <section className="farm-card manage-card wide-card"><div className="section-heading"><div><p className="eyebrow">Farm workshop · rebalanced</p><h2>Permanent upgrades</h2></div><span className="count-badge">● {game.coins.toLocaleString()}</span></div><div className="economy-note"><span>Longer progression</span><strong>Workshop prices now scale more sharply after every level.</strong><p>Choose between summoning now or saving for a meaningful permanent boost.</p></div><div className="upgrade-summary"><div><span>Habitats</span><strong>{farmSlots}</strong></div><div><span>Production bonus</span><strong>+{(game.upgrades.production - 1) * 10}%</strong></div><div><span>Offline capacity</span><strong>{4 + (game.upgrades.offline - 1) * 2}h</strong></div><div><span>Premium luck</span><strong>+{game.upgrades.luck - 1}%</strong></div></div><div className="upgrade-grid">{Object.values(UPGRADES).map((upgrade) => { const level = game.upgrades[upgrade.id]; const maxed = level >= upgrade.maxLevel; const cost = upgradeCost(upgrade.id, level); return <article key={upgrade.id}><span className="upgrade-icon">{upgrade.icon}</span><div className="upgrade-copy"><small>Level {level}/{upgrade.maxLevel}</small><h3>{upgrade.name}</h3><p>{upgrade.description}</p><div className="level-pips">{Array.from({ length: upgrade.maxLevel }, (_, index) => <span className={index < level ? 'filled' : ''} key={index}/>)}</div></div><button type="button" disabled={maxed} onClick={() => purchaseUpgrade(upgrade.id)}>{maxed ? 'Max level' : <>Upgrade <b>● {cost.toLocaleString()}</b></>}</button></article>; })}</div><section className="alpha-goals"><div className="section-heading compact"><div><p className="eyebrow">Season goals</p><h3>Meadow League milestones</h3></div><span className="count-badge">Alpha</span></div><div className="goal-grid"><article><span>Own 10 creatures</span><strong>{Math.min(game.animals.length, 10)}/10</strong><progress max="10" value={Math.min(game.animals.length, 10)}/></article><article><span>Discover 5 species</span><strong>{Math.min(game.discoveredSpecies.length, 5)}/5</strong><progress max="5" value={Math.min(game.discoveredSpecies.length, 5)}/></article><article><span>Reach 200 coins/min</span><strong>{Math.min(incomeRate, 200)}/200</strong><progress max="200" value={Math.min(incomeRate, 200)}/></article></div></section><section className="future-upgrades"><div className="section-heading compact"><div><p className="eyebrow">Next workshop tiers</p><h3>Planned progression</h3></div><span className="count-badge muted-badge">Coming later</span></div><div className="future-upgrade-grid"><article><span>♜</span><div><strong>Species Mastery</strong><small>Invest in your favorite bloodline for species-specific income perks.</small></div><b>Tier II</b></article><article><span>◇</span><div><strong>Border Refinery</strong><small>Fuse duplicate borders to strengthen their passive bonuses.</small></div><b>Tier II</b></article><article><span>♧</span><div><strong>Farm Caretaker</strong><small>Save farm loadouts and automate selected management tasks.</small></div><b>Tier III</b></article><article><span>✦</span><div><strong>Sanctuary Ascension</strong><small>Late-game prestige resets for permanent account-wide power.</small></div><b>Endgame</b></article></div></section><p className="status-message">{message}</p></section>}
 
       {view === 'visit' && <section className="farm-card manage-card wide-card"><div className="section-heading"><div><p className="eyebrow">Multiplayer preview</p><h2>Visit another farm</h2></div><span className="count-badge muted-badge">Database next</span></div><div className="visit-preview"><div className="visit-landscape"><span>🐮</span><span>🐉</span></div><div><h3>Cloud save will unlock visiting</h3><p>The playable loop is browser-local today. Supabase is the planned free-tier backend for accounts, saved farms, profiles, and read-only visits.</p><ul><li>See a friend&apos;s active animals and equipped border.</li><li>Compare income and collection discoveries.</li><li>Leave a lightweight guest-book reaction later.</li></ul></div></div><p className="status-message">No crop farming—animals, collecting, merging, decorating, and social discovery stay at the center.</p></section>}
     </div>
@@ -349,6 +382,6 @@ export default function Home() {
 
     {result && <div className="modal-backdrop" role="presentation" onMouseDown={() => setResult(null)}><section className={`result-modal ${resultClass} ${result.kind === 'batch' ? 'batch-result-modal' : ''}`} role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" type="button" onClick={() => setResult(null)}>×</button>{result.kind === 'animal' ? <><p className="eyebrow">The bell answered</p><CreatureArt speciesId={result.animal.speciesId} variant={result.animal.variant} size="hero"/><span className="result-rank">{SPECIES[result.animal.speciesId].rank} · {VARIANTS[result.animal.variant].name}</span><h2>{animalName(result.animal)}</h2><p>Potential {result.animal.potential} · Level 1</p><StatGrid animal={result.animal}/><div className="result-actions"><button type="button" onClick={() => { setResult(null); openAnimalDetail(result.animal.id); }}>View animal</button><button type="button" onClick={() => setResult(null)}>Keep in storage</button></div></> : result.kind === 'batch' ? <><p className="eyebrow">Grand Summon complete</p><h2>Your ten new creatures</h2><p>{result.newSpecies.length ? `New discoveries: ${result.newSpecies.map((id) => SPECIES[id].name).join(', ')}` : 'All creatures were added to your collection.'}</p><div className="batch-result-grid">{result.animals.map((animal) => <article className={`rank-${SPECIES[animal.speciesId].rank.toLowerCase()} variant-${animal.variant}`} key={animal.id}><CreatureArt speciesId={animal.speciesId} variant={animal.variant} size="small"/><strong>{SPECIES[animal.speciesId].name}</strong><small>{VARIANTS[animal.variant].name} · P{animal.potential}</small></article>)}</div><div className="result-actions"><button type="button" onClick={() => { setResult(null); openView('animals'); }}>Open collection</button><button type="button" onClick={() => setResult(null)}>Close</button></div></> : <><p className="eyebrow">Border Forge reward</p><span className="result-emoji">{BORDERS[result.borderId].icon}</span><span className="result-rank">{BORDERS[result.borderId].rarity}</span><h2>{BORDERS[result.borderId].name}</h2><p>{result.duplicate ? 'Duplicate converted into 15 Fusion Dust.' : BORDERS[result.borderId].description}</p><div className="result-actions"><button type="button" disabled={result.duplicate} onClick={() => { equipBorder(result.borderId); setResult(null); }}>{result.duplicate ? 'Already owned' : 'Equip now'}</button><button type="button" onClick={() => setResult(null)}>Close</button></div></>}</section></div>}
 
-    <footer><span>Core Game Alpha v0.3 · saved in this browser</span><button type="button" onClick={resetPrototype}>Reset alpha save</button></footer>
+    <footer><span>Core Game Alpha v0.4 · saved in this browser</span><button type="button" onClick={resetPrototype}>Reset alpha save</button></footer>
   </main>;
 }
