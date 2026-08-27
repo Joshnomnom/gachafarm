@@ -70,6 +70,11 @@ type SummonReveal = {
   animals?: AnimalInstance[];
   borderId?: BorderId;
 };
+type MergeReveal = {
+  key: number;
+  parents: AnimalInstance[];
+  offspring: AnimalInstance;
+};
 
 const STORAGE_KEY = "gachafarm.prototype.v1";
 const statLabels = {
@@ -99,6 +104,7 @@ const upgradeIcons: Record<UpgradeId, LucideIcon> = {
   offline: Clock3,
   luck: Sparkles,
 };
+const grandSummonStarPositions = [8, 25, 43, 61, 79, 16, 34, 52, 70, 88];
 
 function newId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
@@ -254,6 +260,7 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [animalDetailOpen, setAnimalDetailOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [borderPickerOpen, setBorderPickerOpen] = useState(false);
   const [farmAnimalId, setFarmAnimalId] = useState<string | null>(null);
   const [slotPicker, setSlotPicker] = useState<number | null>(null);
   const [movingAnimalId, setMovingAnimalId] = useState<string | null>(null);
@@ -261,6 +268,7 @@ export default function Home() {
   const [selectedMergeIds, setSelectedMergeIds] = useState<string[]>([]);
   const [isSummoning, setIsSummoning] = useState(false);
   const [summonReveal, setSummonReveal] = useState<SummonReveal | null>(null);
+  const [mergeReveal, setMergeReveal] = useState<MergeReveal | null>(null);
   const [collectionSearch, setCollectionSearch] = useState("");
   const [collectionSort, setCollectionSort] =
     useState<CollectionSort>("income");
@@ -864,6 +872,7 @@ export default function Home() {
   }
 
   function performMerge() {
+    if (mergeReveal) return;
     if (selectedMergeAnimals.length !== 3) {
       setMessage(
         `Choose ${3 - selectedMergeAnimals.length} more matching animal${selectedMergeAnimals.length === 2 ? "" : "s"} first.`,
@@ -882,16 +891,22 @@ export default function Home() {
       fusionDust: current.fusionDust + 5,
     }));
     setSelectedMergeIds([]);
-    setSelectedId(merged.id);
-    setResult({ kind: "animal", animal: merged });
-    setMessage(
-      `Merge complete: ${animalName(merged)} with Potential ${merged.potential}.`,
-    );
-    showAction("🧬", `${animalName(merged)} created`, "magic");
+    setMergeReveal({ key: Date.now(), parents, offspring: merged });
+    setMessage("The three bloodlines are fusing…");
+    window.setTimeout(() => {
+      setMergeReveal(null);
+      setSelectedId(merged.id);
+      setResult({ kind: "animal", animal: merged });
+      setMessage(
+        `Merge complete: ${animalName(merged)} with Potential ${merged.potential}.`,
+      );
+      showAction("🧬", `${animalName(merged)} created`, "magic");
+    }, 2800);
   }
 
   function equipBorder(borderId: BorderId) {
     setGame((current) => ({ ...current, activeBorder: borderId }));
+    setBorderPickerOpen(false);
     setMessage(`${BORDERS[borderId].name} is now active on your farm.`);
     showAction(BORDERS[borderId].icon, `${BORDERS[borderId].name} equipped`);
   }
@@ -901,8 +916,10 @@ export default function Home() {
     setView("farm");
     setSelectedId(null);
     setAnimalDetailOpen(false);
+    setBorderPickerOpen(false);
     setSelectedMergeIds([]);
     setResult(null);
+    setMergeReveal(null);
     setMessage("Prototype reset. Your starter animals are ready.");
   }
 
@@ -1045,6 +1062,15 @@ export default function Home() {
                   <strong>{incomeRate} coins/min</strong>
                 </div>
                 <button
+                  className="border-switch-button"
+                  type="button"
+                  onClick={() => setBorderPickerOpen(true)}
+                >
+                  <Fence aria-hidden="true" />
+                  <b>Change Border</b>
+                  <small>{game.ownedBorders.length} owned</small>
+                </button>
+                <button
                   className="auto-place-button"
                   type="button"
                   onClick={autoPlaceFarm}
@@ -1078,13 +1104,19 @@ export default function Home() {
                 <span />
                 <span />
               </div>
-              <div className="equipped-border-flag">
+              <button
+                className="equipped-border-flag"
+                type="button"
+                onClick={() => setBorderPickerOpen(true)}
+                aria-label={`Change equipped border. Currently ${activeBorder.name}`}
+              >
                 <Fence aria-hidden="true" />
                 <div>
                   <small>Equipped border</small>
                   <strong>{activeBorder.name}</strong>
                 </div>
-              </div>
+                <span>Change</span>
+              </button>
               <div className="animal-grid">
                 {activeAnimals.map((animal, index) => (
                   <button
@@ -1699,10 +1731,12 @@ export default function Home() {
                 <button
                   className="confirm-merge-button action-control"
                   type="button"
-                  disabled={selectedMergeAnimals.length !== 3}
+                  disabled={selectedMergeAnimals.length !== 3 || Boolean(mergeReveal)}
                   onClick={performMerge}
                 >
-                  {selectedMergeAnimals.length === 3
+                  {mergeReveal
+                    ? "Bloodlines fusing…"
+                    : selectedMergeAnimals.length === 3
                     ? "Merge these 3 animals"
                     : `Choose ${3 - selectedMergeAnimals.length} more`}
                 </button>
@@ -1996,23 +2030,46 @@ export default function Home() {
 
       {summonReveal && (
         <div
-          className={`summon-cinematic rarity-${summonReveal.rarity.toLowerCase()}`}
+          className={`summon-cinematic rarity-${summonReveal.rarity.toLowerCase()} ${summonReveal.animals && summonReveal.animals.length > 1 ? "batch-cinematic" : "single-cinematic"}`}
           key={summonReveal.key}
           role="status"
           aria-live="assertive"
         >
           <div className="cinematic-vignette" />
-          <div className="fallen-star">
-            <Star fill="currentColor" />
-          </div>
-          <div className="star-impact">
-            <span />
-            {Array.from({ length: 8 }, (_, index) => (
-              <i key={index} />
-            ))}
-          </div>
+          {summonReveal.animals && summonReveal.animals.length > 1 ? (
+            <div className="grand-star-rain" aria-hidden="true">
+              {summonReveal.animals.map((animal, index) => (
+                <span
+                  className={`pull-star pull-${animalRevealRank(animal).toLowerCase()}`}
+                  style={{
+                    left: `${grandSummonStarPositions[index]}%`,
+                    animationDelay: `${index * 85}ms`,
+                  }}
+                  key={animal.id}
+                >
+                  <Star fill="currentColor" />
+                </span>
+              ))}
+            </div>
+          ) : (
+            <>
+              <div className="fallen-star">
+                <Star fill="currentColor" />
+              </div>
+              <div className="star-impact">
+                <span />
+                {Array.from({ length: 8 }, (_, index) => (
+                  <i key={index} />
+                ))}
+              </div>
+            </>
+          )}
           <section className="cinematic-rewards">
-            <p>Constellation answered</p>
+            <p>
+              {summonReveal.animals && summonReveal.animals.length > 1
+                ? "Ten stars answered"
+                : "Constellation answered"}
+            </p>
             <h2>{summonReveal.label}</h2>
             {summonReveal.animals && (
               <div
@@ -2047,6 +2104,103 @@ export default function Home() {
                 <small>{BORDERS[summonReveal.borderId].rarity} border</small>
               </div>
             )}
+          </section>
+        </div>
+      )}
+
+      {mergeReveal && (
+        <div
+          className={`merge-cinematic reveal-${animalRevealRank(mergeReveal.offspring).toLowerCase()}`}
+          key={mergeReveal.key}
+          role="status"
+          aria-live="assertive"
+        >
+          <div className="merge-magic-field" />
+          <section className="merge-animation-stage">
+            <p>Species merge</p>
+            <h2>Three bloodlines become one</h2>
+            <div className="merge-parent-orbit" aria-hidden="true">
+              {mergeReveal.parents.map((parent, index) => (
+                <div className={`merge-parent merge-parent-${index + 1}`} key={parent.id}>
+                  <CreatureArt speciesId={parent.speciesId} variant={parent.variant} size="small" />
+                </div>
+              ))}
+              <span className="merge-core"><Dna /></span>
+            </div>
+            <div className="merge-offspring-reveal">
+              <CreatureArt
+                speciesId={mergeReveal.offspring.speciesId}
+                variant={mergeReveal.offspring.variant}
+                size="large"
+              />
+              <strong>{animalName(mergeReveal.offspring)}</strong>
+              <small>
+                Potential {mergeReveal.offspring.potential} · +5 Fusion Dust
+              </small>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {borderPickerOpen && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={() => setBorderPickerOpen(false)}
+        >
+          <section
+            className="picker-modal farm-border-picker"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="farm-border-picker-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button
+              className="modal-close"
+              type="button"
+              onClick={() => setBorderPickerOpen(false)}
+            >
+              ×
+            </button>
+            <p className="eyebrow">Farm appearance</p>
+            <h2 id="farm-border-picker-title">Change your farm border</h2>
+            <p className="modal-intro">
+              Choose any border you own. Its passive bonus activates immediately.
+            </p>
+            <div className="farm-border-options">
+              {game.ownedBorders.map((borderId) => {
+                const border = BORDERS[borderId];
+                const active = game.activeBorder === borderId;
+                return (
+                  <button
+                    className={`farm-border-option border-${borderId} ${active ? "active" : ""}`}
+                    type="button"
+                    disabled={active}
+                    onClick={() => equipBorder(borderId)}
+                    key={borderId}
+                  >
+                    <span><Fence /></span>
+                    <div>
+                      <small>{border.rarity}</small>
+                      <strong>{border.name}</strong>
+                      <p>{border.description}</p>
+                    </div>
+                    <b>{active ? "Equipped" : "Equip"}</b>
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              className="border-forge-link"
+              type="button"
+              onClick={() => {
+                setBorderPickerOpen(false);
+                setMachine("border");
+                openView("summon");
+              }}
+            >
+              <Sparkles /> Get more borders in the Border Forge
+            </button>
           </section>
         </div>
       )}
