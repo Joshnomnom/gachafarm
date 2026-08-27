@@ -442,6 +442,12 @@ export default function Home() {
     );
   }
 
+  function addTestCurrency() {
+    setGame((current) => ({ ...current, coins: current.coins + 100000 }));
+    setMessage("Alpha test grant added 100,000 coins.");
+    showAction("●", "+100,000 test coins", "earn");
+  }
+
   function placeAnimalInSlot(animalId: string, slot: number) {
     const target = game.animals.find((animal) => animal.id === animalId);
     if (!target) return;
@@ -996,6 +1002,15 @@ export default function Home() {
           <span className="resource-pill" title="Fusion Dust">
             <Gem aria-hidden="true" /> {game.fusionDust}
           </span>
+          <button
+            className="test-currency-button"
+            type="button"
+            onClick={addTestCurrency}
+            title="Alpha testing shortcut: add 100,000 coins"
+          >
+            <Coins aria-hidden="true" />
+            <span><small>TEST</small>+100,000</span>
+          </button>
           <button className="profile-button" type="button">
             LV. 3
           </button>
