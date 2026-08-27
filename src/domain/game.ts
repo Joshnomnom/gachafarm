@@ -60,10 +60,10 @@ export const BORDERS: Record<BorderId, BorderDefinition> = {
 };
 
 export const UPGRADES: Record<UpgradeId, UpgradeDefinition> = {
-  habitat: { id:'habitat', name:'Habitat Expansion', icon:'⌂', description:'+3 active animal slots per level.', maxLevel:3, baseCost:7500 },
-  production: { id:'production', name:'Feed Workshop', icon:'⚙', description:'+10% total farm income per level.', maxLevel:5, baseCost:5500 },
-  offline: { id:'offline', name:'Bigger Coin Silo', icon:'◷', description:'+2 hours offline-income capacity per level.', maxLevel:5, baseCost:4200 },
-  luck: { id:'luck', name:'Lucky Bell Polish', icon:'✦', description:'+1% premium variant chance per level.', maxLevel:5, baseCost:8000 },
+  habitat: { id:'habitat', name:'Habitat Expansion', icon:'🏡', description:'+3 active animal slots per level.', maxLevel:3, baseCost:7500 },
+  production: { id:'production', name:'Feed Workshop', icon:'🥣', description:'+10% total farm income per level.', maxLevel:5, baseCost:5500 },
+  offline: { id:'offline', name:'Bigger Coin Silo', icon:'🪙', description:'+2 hours offline-income capacity per level.', maxLevel:5, baseCost:4200 },
+  luck: { id:'luck', name:'Lucky Bell Polish', icon:'🔔', description:'+1% premium variant chance per level.', maxLevel:5, baseCost:8000 },
 };
 
 const allSpecies = Object.values(SPECIES);
