@@ -14,15 +14,22 @@ type Result = { kind: 'animal'; animal: AnimalInstance } | { kind: 'batch'; anim
 type CollectionSort = 'income' | 'potential' | 'newest' | 'name';
 type CollectionStatus = 'all' | 'active' | 'stored' | 'locked';
 type ActionTone = 'earn' | 'spend' | 'magic' | 'success';
+type SummonReveal = { key: number; rarity: Rank; label: string };
 
 const STORAGE_KEY = 'gachafarm.prototype.v1';
 const statLabels = { yieldStat: 'Yield', tempoStat: 'Tempo', fortune: 'Fortune', heritage: 'Heritage' } as const;
+const variantRevealRank: Record<VariantId, Rank> = { natural: 'Common', bronze: 'Rare', golden: 'Epic', diamond: 'Legendary', mystic: 'Mythic' };
 
 function newId(prefix: string) { return `${prefix}-${crypto.randomUUID()}`; }
 function animalName(animal: AnimalInstance) { return `${VARIANTS[animal.variant].name} ${SPECIES[animal.speciesId].name}`; }
 function perSecondIncome(animal: AnimalInstance, multiplier: number) {
   const value = animalIncomePerMinute(animal) * multiplier / 60;
   return value < 1 ? value.toFixed(2) : value.toFixed(1);
+}
+function animalRevealRank(animal: AnimalInstance) {
+  const speciesRank = SPECIES[animal.speciesId].rank;
+  const variantRank = variantRevealRank[animal.variant];
+  return RANK_ORDER.indexOf(speciesRank) >= RANK_ORDER.indexOf(variantRank) ? speciesRank : variantRank;
 }
 function statDifference(value: number, comparison?: number) {
   if (comparison === undefined) return '';
@@ -82,6 +89,7 @@ export default function Home() {
   const [draggingAnimalId, setDraggingAnimalId] = useState<string | null>(null);
   const [selectedMergeIds, setSelectedMergeIds] = useState<string[]>([]);
   const [isSummoning, setIsSummoning] = useState(false);
+  const [summonReveal, setSummonReveal] = useState<SummonReveal | null>(null);
   const [collectionSearch, setCollectionSearch] = useState('');
   const [collectionSort, setCollectionSort] = useState<CollectionSort>('income');
   const [rankFilter, setRankFilter] = useState<'all' | Rank>('all');
@@ -224,47 +232,56 @@ export default function Home() {
   function performSummon(quantity: 1 | 10 = 1) {
     const cost = banner === 'creature' ? (quantity === 10 ? TEN_PULL_COST : SUMMON_COST) : BORDER_SUMMON_COST;
     if (game.coins < cost || isSummoning) { setMessage(`You need ${cost.toLocaleString()} coins for this summon.`); return; }
-    setIsSummoning(true); setMessage('The bell is answering…');
-    showAction(banner === 'creature' ? '🔔' : '🪄', banner === 'creature' ? `Creature Bell ×${quantity}` : 'Border Forge activated', 'magic');
-    window.setTimeout(() => {
-      if (banner === 'creature') {
-        setGame((current) => {
-          const border = BORDERS[current.activeBorder];
-          const pulledAnimals: AnimalInstance[] = [];
-          let nextPity = current.pity;
-          const createdAt = Date.now();
-          for (let index = 0; index < quantity; index += 1) {
-            const pulled = summonAnimal(Math.random, newId('summon'), createdAt + index, nextPity, {
-              dragonBonus: border.dragonBonus,
-              goldenBonus: border.goldenBonus + (current.upgrades.luck - 1) * .01,
-              minimumRank: quantity === 10 && index === 9 ? 'Rare' : undefined,
-            });
-            pulledAnimals.push(pulled.animal);
-            nextPity = pulled.nextPity;
-          }
-          const newSpecies = [...new Set(pulledAnimals.map((animal) => animal.speciesId).filter((speciesId) => !current.discoveredSpecies.includes(speciesId)))];
-          if (quantity === 1) { setResult({ kind: 'animal', animal: pulledAnimals[0] }); setSelectedId(pulledAnimals[0].id); }
-          else setResult({ kind: 'batch', animals: pulledAnimals, newSpecies });
-          setMessage(quantity === 10 ? `Ten creatures answered. ${newSpecies.length ? `${newSpecies.length} new species discovered!` : 'Collection expanded.'}` : `${animalName(pulledAnimals[0])} answered the bell.`);
-          return { ...current, coins: current.coins - cost, pity: nextPity,
-            discoveryStars: current.discoveryStars + newSpecies.length,
-            discoveredSpecies: [...current.discoveredSpecies, ...newSpecies],
-            summonHistory: [...pulledAnimals.map((animal) => ({ speciesId: animal.speciesId, variant: animal.variant, createdAt: animal.createdAt })), ...current.summonHistory].slice(0, 30),
-            animals: [...current.animals, ...pulledAnimals] };
+    setIsSummoning(true); setSummonReveal(null); setMessage('The bell is answering…');
+    if (banner === 'creature') {
+      const border = BORDERS[game.activeBorder];
+      const pulledAnimals: AnimalInstance[] = [];
+      let nextPity = game.pity;
+      const createdAt = Date.now();
+      for (let index = 0; index < quantity; index += 1) {
+        const pulled = summonAnimal(Math.random, newId('summon'), createdAt + index, nextPity, {
+          dragonBonus: border.dragonBonus,
+          goldenBonus: border.goldenBonus + (game.upgrades.luck - 1) * .01,
+          minimumRank: quantity === 10 && index === 9 ? 'Rare' : undefined,
         });
-      } else {
-        setGame((current) => {
-          const pulled = summonBorder(Math.random, current.borderPity);
-          const duplicate = current.ownedBorders.includes(pulled.borderId);
-          setResult({ kind: 'border', borderId: pulled.borderId, duplicate });
-          setMessage(duplicate ? `Duplicate ${BORDERS[pulled.borderId].name} became 15 Fusion Dust.` : `${BORDERS[pulled.borderId].name} joined your border collection.`);
-          return { ...current, coins: current.coins - BORDER_SUMMON_COST, borderPity: pulled.nextPity,
-            fusionDust: current.fusionDust + (duplicate ? 15 : 0),
-            ownedBorders: duplicate ? current.ownedBorders : [...current.ownedBorders, pulled.borderId] };
-        });
+        pulledAnimals.push(pulled.animal);
+        nextPity = pulled.nextPity;
       }
-      setIsSummoning(false);
-    }, 700);
+      const newSpecies = [...new Set(pulledAnimals.map((animal) => animal.speciesId).filter((speciesId) => !game.discoveredSpecies.includes(speciesId)))];
+      const nextResult: Result = quantity === 1 ? { kind: 'animal', animal: pulledAnimals[0] } : { kind: 'batch', animals: pulledAnimals, newSpecies };
+      const bestAnimal = [...pulledAnimals].sort((a, b) => RANK_ORDER.indexOf(animalRevealRank(b)) - RANK_ORDER.indexOf(animalRevealRank(a)))[0];
+      const revealRank = animalRevealRank(bestAnimal);
+      const variantOutranksSpecies = RANK_ORDER.indexOf(variantRevealRank[bestAnimal.variant]) > RANK_ORDER.indexOf(SPECIES[bestAnimal.speciesId].rank);
+      const revealLabel = quantity === 10 ? `Best pull · ${revealRank}` : variantOutranksSpecies ? `${VARIANTS[bestAnimal.variant].name} variant` : `${revealRank} creature`;
+      setGame({ ...game, coins: game.coins - cost, pity: nextPity,
+        discoveryStars: game.discoveryStars + newSpecies.length,
+        discoveredSpecies: [...game.discoveredSpecies, ...newSpecies],
+        summonHistory: [...pulledAnimals.map((animal) => ({ speciesId: animal.speciesId, variant: animal.variant, createdAt: animal.createdAt })), ...game.summonHistory].slice(0, 30),
+        animals: [...game.animals, ...pulledAnimals] });
+      window.setTimeout(() => {
+        setSummonReveal({ key: Date.now(), rarity: revealRank, label: revealLabel }); setMessage(`${revealRank} falling star detected…`);
+        window.setTimeout(() => {
+          setResult(nextResult); if (quantity === 1) setSelectedId(pulledAnimals[0].id);
+          setSummonReveal(null); setIsSummoning(false);
+          setMessage(quantity === 10 ? `Ten creatures answered. ${newSpecies.length ? `${newSpecies.length} new species discovered!` : 'Collection expanded.'}` : `${animalName(pulledAnimals[0])} answered the bell.`);
+        }, 1450);
+      }, 520);
+    } else {
+      const pulled = summonBorder(Math.random, game.borderPity);
+      const duplicate = game.ownedBorders.includes(pulled.borderId);
+      const nextResult: Result = { kind: 'border', borderId: pulled.borderId, duplicate };
+      const revealRank = BORDERS[pulled.borderId].rarity as Rank;
+      setGame({ ...game, coins: game.coins - BORDER_SUMMON_COST, borderPity: pulled.nextPity,
+        fusionDust: game.fusionDust + (duplicate ? 15 : 0),
+        ownedBorders: duplicate ? game.ownedBorders : [...game.ownedBorders, pulled.borderId] });
+      window.setTimeout(() => {
+        setSummonReveal({ key: Date.now(), rarity: revealRank, label: `${revealRank} farm border` }); setMessage(`${revealRank} falling star detected…`);
+        window.setTimeout(() => {
+          setResult(nextResult); setSummonReveal(null); setIsSummoning(false);
+          setMessage(duplicate ? `Duplicate ${BORDERS[pulled.borderId].name} became 15 Fusion Dust.` : `${BORDERS[pulled.borderId].name} joined your border collection.`);
+        }, 1450);
+      }, 520);
+    }
   }
 
   function toggleLock(animalId: string) {
@@ -416,8 +433,8 @@ export default function Home() {
         </div><section className={`farm-storage ${draggingAnimalId ? 'drop-ready' : ''}`} aria-label="Farm storage" onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; }} onDrop={dropAnimalInStorage}><div className="farm-storage-heading"><div><span>Farm storage</span><strong>{storageByIncome.length} creatures waiting</strong></div><small>Drag a creature onto a habitat · drop active creatures here to store</small></div>{storageByIncome.length ? <div className="farm-storage-row">{storageByIncome.map((animal) => <button className={draggingAnimalId === animal.id ? 'dragging' : ''} type="button" draggable onDragStart={(event) => startAnimalDrag(event, animal.id)} onDragEnd={() => setDraggingAnimalId(null)} onClick={() => beginMove(animal.id)} key={animal.id}><CreatureArt speciesId={animal.speciesId} variant={animal.variant} size="small"/><span><strong>{animalName(animal)}</strong><small>+{animalIncomePerMinute(animal)}/min · tap to place</small></span><b>⠿</b></button>)}</div> : <div className="farm-storage-empty">Every owned creature is active. Drag one here to store it.</div>}</section><p className="status-message" role="status" aria-live="polite">{message}</p>
       </section>}
 
-      {view === 'summon' && <section className={`summon-screen wide-card ${isSummoning ? 'summoning' : ''}`} aria-labelledby="summon-title">
-        <div className="summon-sky"><span className="summon-star star-one">✦</span><span className="summon-star star-two">✧</span><span className="summon-star star-three">✦</span><div className="magic-rings"><span/><span/><div className="great-bell">{banner === 'creature' ? '🔔' : '🪄'}</div></div></div>
+      {view === 'summon' && <section className={`summon-screen wide-card ${isSummoning ? 'summoning' : ''} ${summonReveal ? `revealing rarity-${summonReveal.rarity.toLowerCase()}` : ''}`} aria-labelledby="summon-title">
+        <div className="summon-sky"><span className="summon-star star-one">✦</span><span className="summon-star star-two">✧</span><span className="summon-star star-three">✦</span><div className="magic-rings"><span/><span/><div className="great-bell">{banner === 'creature' ? '🔔' : '🪄'}</div></div>{summonReveal && <div className={`summon-reveal rarity-${summonReveal.rarity.toLowerCase()}`} key={summonReveal.key} aria-live="assertive"><div className="fallen-star"><span>✦</span></div><div className="star-impact"><span/>{Array.from({ length: 8 }, (_, index) => <i key={index}/>)}</div><div className="falling-star-label"><small>Falling star</small><strong>{summonReveal.label}</strong></div></div>}</div>
         <div className="summon-content"><p className="eyebrow">The Grand Gacha Hall</p><h2 id="summon-title">Choose what answers the bell</h2><p>Creature banners grow your herd. Border banners unlock permanent farm styles and gameplay boosts.</p>
           <div className="banner-tabs"><button className={banner === 'creature' ? 'active' : ''} type="button" onClick={() => setBanner('creature')}><span>🐉</span><b>Creature Bell</b><small>Animals with unique stats</small></button><button className={banner === 'border' ? 'active' : ''} type="button" onClick={() => setBanner('border')}><span>🌠</span><b>Border Forge</b><small>Farm looks + passive boosts</small></button></div>
           <div className="banner-details">
