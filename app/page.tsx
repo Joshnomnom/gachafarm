@@ -43,10 +43,7 @@ import {
   createInitialGameState,
   farmIncomePerMinute,
   farmSlotCount,
-  mergeAnimals,
   migrateGameState,
-  summonAnimal,
-  summonBorder,
   totalFarmMultiplier,
   upgradeCost,
   type AnimalInstance,
@@ -57,6 +54,10 @@ import {
   type UpgradeId,
   type VariantId,
 } from "../src/domain/game";
+import type {
+  GameAction,
+  GameActionEvent,
+} from "../src/domain/server-actions";
 
 type View = "farm" | "summon" | "animals" | "merge" | "upgrades" | "visit";
 type Machine = "meadow" | "starfall" | "border";
@@ -177,6 +178,36 @@ async function uploadCloudState(state: GameState) {
   const data = (await response.json()) as { savedAt?: number; error?: string };
   if (!response.ok || !data.savedAt) throw new Error(data.error || "Cloud save failed.");
   return data.savedAt;
+}
+
+async function requestGameAction(action: GameAction) {
+  const actionId = newId(action.type);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch("/api/game-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actionId, action }),
+      });
+      const data = (await response.json()) as {
+        state?: unknown;
+        event?: GameActionEvent;
+        savedAt?: number;
+        error?: string;
+      };
+      if (!response.ok || !data.event || !data.savedAt) {
+        throw new Error(data.error || "The farm could not finish that action.");
+      }
+      const state = migrateGameState(data.state, Date.now());
+      if (!state) throw new Error("The server returned an invalid farm state.");
+      return { state, event: data.event, savedAt: data.savedAt };
+    } catch (error) {
+      lastError = error;
+      if (error instanceof Error && !/fetch|network|load/i.test(error.message)) break;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("The farm could not finish that action.");
 }
 
 function CreatureArt({
@@ -330,8 +361,10 @@ export default function Home() {
   const [visitResults, setVisitResults] = useState<PublicFarm[]>([]);
   const [visitedFarm, setVisitedFarm] = useState<PublicFarm | null>(null);
   const [visitLoading, setVisitLoading] = useState(false);
+  const [serverActionPending, setServerActionPending] = useState(false);
   const cloudReadyRef = useRef(false);
   const cloudSaveTimerRef = useRef<number | null>(null);
+  const serverActionPendingRef = useRef(false);
 
   useEffect(() => {
     const currentTime = Date.now();
@@ -543,28 +576,55 @@ export default function Home() {
     setActionFeedback({ key: Date.now(), icon, text, tone });
   }
 
-  function claimIncome() {
+  async function runAuthoritativeAction(action: GameAction) {
+    if (!onlineProfile || !cloudReadyRef.current) {
+      throw new Error("Connect your cloud farm before using protected game actions.");
+    }
+    if (serverActionPendingRef.current) {
+      throw new Error("Your previous farm action is still finishing.");
+    }
+    serverActionPendingRef.current = true;
+    setServerActionPending(true);
+    setCloudStatus("saving");
+    try {
+      const result = await requestGameAction(action);
+      setGame(result.state);
+      setCloudLastSaved(result.savedAt);
+      setCloudStatus("synced");
+      return result.event;
+    } catch (error) {
+      setCloudStatus("error");
+      throw error;
+    } finally {
+      serverActionPendingRef.current = false;
+      setServerActionPending(false);
+    }
+  }
+
+  async function claimIncome() {
     if (pendingIncome <= 0) {
       setMessage("Your animals are still gathering coins.");
       return;
     }
-    setGame((current) => ({
-      ...current,
-      coins: current.coins + pendingIncome,
-      lastClaimedAt: now,
-    }));
-    setMessage(`Collected ${pendingIncome.toLocaleString()} idle coins.`);
-    showAction(
-      "●",
-      `+${pendingIncome.toLocaleString()} coins collected`,
-      "earn",
-    );
+    try {
+      const event = await runAuthoritativeAction({ type: "claim-income" });
+      if (event.type !== "income-claimed") return;
+      setMessage(`Collected ${event.amount.toLocaleString()} trusted idle coins.`);
+      showAction("●", `+${event.amount.toLocaleString()} coins collected`, "earn");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Income claim failed.");
+    }
   }
 
-  function addTestCurrency() {
-    setGame((current) => ({ ...current, coins: current.coins + 100000 }));
-    setMessage("Alpha test grant added 100,000 coins.");
-    showAction("●", "+100,000 test coins", "earn");
+  async function addTestCurrency() {
+    try {
+      const event = await runAuthoritativeAction({ type: "grant-test-currency" });
+      if (event.type !== "test-currency-granted") return;
+      setMessage("Protected alpha test grant added 100,000 coins.");
+      showAction("●", "+100,000 test coins", "earn");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Test grant failed.");
+    }
   }
 
   async function saveCloudNow() {
@@ -729,7 +789,7 @@ export default function Home() {
     showAction("🪄", "Best-income farm assembled", "magic");
   }
 
-  function performSummon(quantity: 1 | 10 = 1) {
+  async function performSummon(quantity: 1 | 10 = 1) {
     const pullCount = machine === "meadow" ? quantity : 1;
     const cost =
       machine === "meadow"
@@ -751,7 +811,7 @@ export default function Home() {
         : machine === "starfall"
           ? "Discovery Stars"
           : "Fusion Dust";
-    if (balance < cost || isSummoning) {
+    if (balance < cost || isSummoning || serverActionPending) {
       setMessage(
         `You need ${cost.toLocaleString()} ${currencyName} for this machine.`,
       );
@@ -760,40 +820,11 @@ export default function Home() {
     setIsSummoning(true);
     setSummonReveal(null);
     setMessage("The bell is answering…");
-    if (machine !== "border") {
-      const border = BORDERS[game.activeBorder];
-      const pulledAnimals: AnimalInstance[] = [];
-      let nextPity = game.pity;
-      const createdAt = Date.now();
-      for (let index = 0; index < pullCount; index += 1) {
-        const pulled = summonAnimal(
-          Math.random,
-          newId("summon"),
-          createdAt + index,
-          nextPity,
-          {
-            dragonBonus:
-              border.dragonBonus + (machine === "starfall" ? 0.03 : 0),
-            goldenBonus:
-              border.goldenBonus +
-              (game.upgrades.luck - 1) * 0.01 +
-              (machine === "starfall" ? 0.12 : 0),
-            minimumRank:
-              machine === "starfall" || (pullCount === 10 && index === 9)
-                ? "Rare"
-                : undefined,
-          },
-        );
-        pulledAnimals.push(pulled.animal);
-        nextPity = pulled.nextPity;
-      }
-      const newSpecies = [
-        ...new Set(
-          pulledAnimals
-            .map((animal) => animal.speciesId)
-            .filter((speciesId) => !game.discoveredSpecies.includes(speciesId)),
-        ),
-      ];
+    try {
+      const event = await runAuthoritativeAction({ type: "summon", machine, quantity });
+      if (event.type === "creatures-summoned") {
+        const pulledAnimals = event.animals;
+        const newSpecies = event.newSpecies;
       const nextResult: Result =
         pullCount === 1
           ? { kind: "animal", animal: pulledAnimals[0] }
@@ -813,25 +844,6 @@ export default function Home() {
           : variantOutranksSpecies
             ? `${VARIANTS[bestAnimal.variant].name} variant`
             : `${revealRank} creature`;
-      setGame({
-        ...game,
-        coins: game.coins - (machine === "meadow" ? cost : 0),
-        discoveryStars:
-          game.discoveryStars -
-          (machine === "starfall" ? cost : 0) +
-          newSpecies.length,
-        pity: nextPity,
-        discoveredSpecies: [...game.discoveredSpecies, ...newSpecies],
-        summonHistory: [
-          ...pulledAnimals.map((animal) => ({
-            speciesId: animal.speciesId,
-            variant: animal.variant,
-            createdAt: animal.createdAt,
-          })),
-          ...game.summonHistory,
-        ].slice(0, 30),
-        animals: [...game.animals, ...pulledAnimals],
-      });
       window.setTimeout(() => {
         setSummonReveal({
           key: Date.now(),
@@ -852,29 +864,20 @@ export default function Home() {
           );
         }, 3200);
       }, 750);
-    } else {
-      const pulled = summonBorder(Math.random, game.borderPity);
-      const duplicate = game.ownedBorders.includes(pulled.borderId);
+      } else if (event.type === "border-summoned") {
+      const duplicate = event.duplicate;
       const nextResult: Result = {
         kind: "border",
-        borderId: pulled.borderId,
+        borderId: event.borderId,
         duplicate,
       };
-      const revealRank = BORDERS[pulled.borderId].rarity as Rank;
-      setGame({
-        ...game,
-        fusionDust: game.fusionDust - BORDER_SUMMON_COST + (duplicate ? 15 : 0),
-        borderPity: pulled.nextPity,
-        ownedBorders: duplicate
-          ? game.ownedBorders
-          : [...game.ownedBorders, pulled.borderId],
-      });
+      const revealRank = BORDERS[event.borderId].rarity as Rank;
       window.setTimeout(() => {
         setSummonReveal({
           key: Date.now(),
           rarity: revealRank,
           label: `${revealRank} farm border`,
-          borderId: pulled.borderId,
+          borderId: event.borderId,
         });
         setMessage(`${revealRank} border sigil detected…`);
         window.setTimeout(() => {
@@ -883,11 +886,16 @@ export default function Home() {
           setIsSummoning(false);
           setMessage(
             duplicate
-              ? `Duplicate ${BORDERS[pulled.borderId].name} became 15 Fusion Dust.`
-              : `${BORDERS[pulled.borderId].name} joined your border collection.`,
+              ? `Duplicate ${BORDERS[event.borderId].name} became 15 Fusion Dust.`
+              : `${BORDERS[event.borderId].name} joined your border collection.`,
           );
         }, 3200);
       }, 750);
+      }
+    } catch (error) {
+      setSummonReveal(null);
+      setIsSummoning(false);
+      setMessage(error instanceof Error ? error.message : "The summon could not be completed.");
     }
   }
 
@@ -925,7 +933,7 @@ export default function Home() {
     placeAnimalInSlot(animalId, free);
   }
 
-  function levelAnimal(animalId: string) {
+  async function levelAnimal(animalId: string) {
     const animal = game.animals.find((candidate) => candidate.id === animalId);
     if (!animal) return;
     const cost = animalLevelCost(animal);
@@ -933,20 +941,17 @@ export default function Home() {
       setMessage(`You need ${cost.toLocaleString()} coins for the next level.`);
       return;
     }
-    setGame((current) => ({
-      ...current,
-      coins: current.coins - cost,
-      animals: current.animals.map((candidate) =>
-        candidate.id === animalId
-          ? { ...candidate, level: candidate.level + 1 }
-          : candidate,
-      ),
-    }));
-    setMessage(`${animalName(animal)} reached level ${animal.level + 1}.`);
-    showAction("🌟", `${animalName(animal)} leveled up`, "spend");
+    try {
+      const event = await runAuthoritativeAction({ type: "level-animal", animalId });
+      if (event.type !== "animal-leveled") return;
+      setMessage(`${animalName(event.animal)} reached level ${event.animal.level}.`);
+      showAction("🌟", `${animalName(event.animal)} leveled up`, "spend");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Animal upgrade failed.");
+    }
   }
 
-  function purchaseUpgrade(upgradeId: UpgradeId) {
+  async function purchaseUpgrade(upgradeId: UpgradeId) {
     const definition = UPGRADES[upgradeId];
     const currentLevel = game.upgrades[upgradeId];
     if (currentLevel >= definition.maxLevel) {
@@ -960,18 +965,16 @@ export default function Home() {
       );
       return;
     }
-    setGame((current) => ({
-      ...current,
-      coins: current.coins - cost,
-      upgrades: {
-        ...current.upgrades,
-        [upgradeId]: current.upgrades[upgradeId] + 1,
-      },
-    }));
-    setMessage(`${definition.name} upgraded to level ${currentLevel + 1}.`);
-    setUpgradingId(upgradeId);
-    window.setTimeout(() => setUpgradingId(null), 850);
-    showAction("🛠️", `${definition.name} · Level ${currentLevel + 1}`, "spend");
+    try {
+      const event = await runAuthoritativeAction({ type: "purchase-upgrade", upgradeId });
+      if (event.type !== "upgrade-purchased") return;
+      setMessage(`${definition.name} upgraded to level ${event.level}.`);
+      setUpgradingId(upgradeId);
+      window.setTimeout(() => setUpgradingId(null), 850);
+      showAction("🛠️", `${definition.name} · Level ${event.level}`, "spend");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Farm upgrade failed.");
+    }
   }
 
   function toggleMergeAnimal(animal: AnimalInstance) {
@@ -1066,7 +1069,7 @@ export default function Home() {
     showAction("🧬", "Merge tray autofilled", "magic");
   }
 
-  function performMerge() {
+  async function performMerge() {
     if (mergeReveal) return;
     if (selectedMergeAnimals.length !== 3) {
       setMessage(
@@ -1075,28 +1078,26 @@ export default function Home() {
       return;
     }
     const parents = selectedMergeAnimals;
-    const merged = mergeAnimals(parents, Math.random, newId("merge"), now);
-    const ids = new Set(parents.map((animal) => animal.id));
-    setGame((current) => ({
-      ...current,
-      animals: [
-        ...current.animals.filter((animal) => !ids.has(animal.id)),
-        merged,
-      ],
-      fusionDust: current.fusionDust + 5,
-    }));
-    setSelectedMergeIds([]);
-    setMergeReveal({ key: Date.now(), parents, offspring: merged });
-    setMessage("The three bloodlines are fusing…");
-    window.setTimeout(() => {
-      setMergeReveal(null);
-      setSelectedId(merged.id);
-      setResult({ kind: "animal", animal: merged });
-      setMessage(
-        `Merge complete: ${animalName(merged)} with Potential ${merged.potential}.`,
-      );
-      showAction("🧬", `${animalName(merged)} created`, "magic");
-    }, 2800);
+    try {
+      const event = await runAuthoritativeAction({
+        type: "merge",
+        animalIds: parents.map((animal) => animal.id),
+      });
+      if (event.type !== "animals-merged") return;
+      const merged = event.offspring;
+      setSelectedMergeIds([]);
+      setMergeReveal({ key: Date.now(), parents: event.parents, offspring: merged });
+      setMessage("The three protected bloodlines are fusing…");
+      window.setTimeout(() => {
+        setMergeReveal(null);
+        setSelectedId(merged.id);
+        setResult({ kind: "animal", animal: merged });
+        setMessage(`Merge complete: ${animalName(merged)} with Potential ${merged.potential}.`);
+        showAction("🧬", `${animalName(merged)} created`, "magic");
+      }, 2800);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Merge failed.");
+    }
   }
 
   function equipBorder(borderId: BorderId) {
@@ -1106,16 +1107,21 @@ export default function Home() {
     showAction(BORDERS[borderId].icon, `${BORDERS[borderId].name} equipped`);
   }
 
-  function resetPrototype() {
-    setGame(createInitialGameState(Date.now()));
-    setView("farm");
-    setSelectedId(null);
-    setAnimalDetailOpen(false);
-    setBorderPickerOpen(false);
-    setSelectedMergeIds([]);
-    setResult(null);
-    setMergeReveal(null);
-    setMessage("Prototype reset. Your starter animals are ready.");
+  async function resetPrototype() {
+    try {
+      const event = await runAuthoritativeAction({ type: "reset-prototype" });
+      if (event.type !== "prototype-reset") return;
+      setView("farm");
+      setSelectedId(null);
+      setAnimalDetailOpen(false);
+      setBorderPickerOpen(false);
+      setSelectedMergeIds([]);
+      setResult(null);
+      setMergeReveal(null);
+      setMessage("Protected prototype reset. Your starter animals are ready.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Prototype reset failed.");
+    }
   }
 
   function openAnimalDetail(animalId: string) {
@@ -1195,6 +1201,7 @@ export default function Home() {
             className="test-currency-button"
             type="button"
             onClick={addTestCurrency}
+            disabled={serverActionPending || cloudStatus !== "synced"}
             title="Alpha testing shortcut: add 100,000 coins"
           >
             <Coins aria-hidden="true" />
@@ -1217,10 +1224,10 @@ export default function Home() {
 
       <section className="hero-strip">
         <div>
-          <p className="eyebrow">Online Farm Beta · Collection Season 1</p>
+          <p className="eyebrow">Protected Economy Beta · Collection Season 1</p>
           <h1>{heroTitle}</h1>
         </div>
-        <button className="claim-button" type="button" onClick={claimIncome}>
+        <button className="claim-button" type="button" onClick={claimIncome} disabled={serverActionPending || cloudStatus !== "synced"}>
           <span>
             {pendingIncome > 0 ? "Idle income ready" : "Animals are producing"}
           </span>
@@ -1606,7 +1613,7 @@ export default function Home() {
                 <button
                   className={`summon-main-button action-control machine-action-${machine} ${isSummoning ? "activated" : ""}`}
                   type="button"
-                  disabled={isSummoning}
+                  disabled={isSummoning || serverActionPending || cloudStatus !== "synced"}
                   onClick={() => performSummon(1)}
                 >
                   <span>
@@ -1638,7 +1645,7 @@ export default function Home() {
                   <button
                     className={`ten-pull-button action-control ${isSummoning ? "activated" : ""}`}
                     type="button"
-                    disabled={isSummoning}
+                    disabled={isSummoning || serverActionPending || cloudStatus !== "synced"}
                     onClick={() => performSummon(10)}
                   >
                     <span>Grand Summon ×10</span>
@@ -1944,7 +1951,7 @@ export default function Home() {
                 <button
                   className="confirm-merge-button action-control"
                   type="button"
-                  disabled={selectedMergeAnimals.length !== 3 || Boolean(mergeReveal)}
+                  disabled={selectedMergeAnimals.length !== 3 || Boolean(mergeReveal) || serverActionPending || cloudStatus !== "synced"}
                   onClick={performMerge}
                 >
                   {mergeReveal
@@ -2096,7 +2103,7 @@ export default function Home() {
                     <button
                       className="action-control"
                       type="button"
-                      disabled={maxed}
+                      disabled={maxed || serverActionPending || cloudStatus !== "synced"}
                       onClick={() => purchaseUpgrade(upgrade.id)}
                     >
                       {maxed ? (
@@ -2867,6 +2874,7 @@ export default function Home() {
                     className="primary-small"
                     type="button"
                     onClick={() => levelAnimal(selectedAnimal.id)}
+                    disabled={serverActionPending || cloudStatus !== "synced"}
                   >
                     Level up ·{" "}
                     {animalLevelCost(selectedAnimal).toLocaleString()}
@@ -3030,8 +3038,8 @@ export default function Home() {
         </div>
       )}
       <footer>
-        <span>Core Game Alpha v0.6 · saved in this browser</span>
-        <button type="button" onClick={resetPrototype}>
+        <span>Protected Economy Alpha · trusted cloud actions</span>
+        <button type="button" onClick={resetPrototype} disabled={serverActionPending || cloudStatus !== "synced"}>
           Reset alpha save
         </button>
       </footer>

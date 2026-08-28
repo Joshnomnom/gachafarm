@@ -29,3 +29,28 @@ ON player_profiles(display_name COLLATE NOCASE)`;
 export const CREATE_SAVE_UPDATED_INDEX = `
 CREATE INDEX IF NOT EXISTS idx_game_saves_updated_at
 ON game_saves(updated_at DESC)`;
+
+export const CREATE_GAME_AUTHORITY = `
+CREATE TABLE IF NOT EXISTS game_authority (
+  user_id TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL DEFAULT 0,
+  authoritative_since INTEGER NOT NULL,
+  last_action_at INTEGER NOT NULL,
+  last_action_id TEXT,
+  FOREIGN KEY (user_id) REFERENCES player_profiles(user_id) ON DELETE CASCADE
+)`;
+
+export const CREATE_GAME_ACTION_LEDGER = `
+CREATE TABLE IF NOT EXISTS game_action_ledger (
+  user_id TEXT NOT NULL,
+  action_id TEXT NOT NULL,
+  action_type TEXT NOT NULL,
+  response_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, action_id),
+  FOREIGN KEY (user_id) REFERENCES player_profiles(user_id) ON DELETE CASCADE
+)`;
+
+export const CREATE_ACTION_LEDGER_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_game_action_ledger_user_created
+ON game_action_ledger(user_id, created_at DESC)`;

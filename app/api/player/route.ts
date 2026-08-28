@@ -1,4 +1,5 @@
-import { ensurePlayer, getDatabase, getRequestUser, publicProfile, type GameSaveRow } from "../../../db/game-store";
+import { getOrCreateAuthoritativeState } from "../../../db/authoritative-store";
+import { ensurePlayer, getDatabase, getRequestUser, publicProfile } from "../../../db/game-store";
 
 function json(value: unknown, status = 200) {
   return Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
@@ -9,13 +10,10 @@ export async function GET(request: Request) {
   if (!user) return json({ error: "Sign in is required for cloud saves." }, 401);
   try {
     const profile = await ensurePlayer(user);
-    const save = await getDatabase()
-      .prepare("SELECT * FROM game_saves WHERE user_id = ?")
-      .bind(user.id)
-      .first<GameSaveRow>();
+    const save = await getOrCreateAuthoritativeState(user.id, Date.now());
     return json({
       profile: publicProfile(profile),
-      save: save ? { state: JSON.parse(save.state_json), updatedAt: save.updated_at } : null,
+      save: { state: save.state, updatedAt: save.savedAt, revision: save.revision },
     });
   } catch (error) {
     console.error("player GET failed", error);

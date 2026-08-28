@@ -1,5 +1,8 @@
 import { env } from "cloudflare:workers";
 import {
+  CREATE_ACTION_LEDGER_INDEX,
+  CREATE_GAME_ACTION_LEDGER,
+  CREATE_GAME_AUTHORITY,
   CREATE_GAME_SAVES,
   CREATE_PLAYER_PROFILES,
   CREATE_PROFILE_NAME_INDEX,
@@ -42,8 +45,11 @@ export async function ensureSchema() {
       await database.batch([
         database.prepare(CREATE_PLAYER_PROFILES),
         database.prepare(CREATE_GAME_SAVES),
+        database.prepare(CREATE_GAME_AUTHORITY),
+        database.prepare(CREATE_GAME_ACTION_LEDGER),
         database.prepare(CREATE_PROFILE_NAME_INDEX),
         database.prepare(CREATE_SAVE_UPDATED_INDEX),
+        database.prepare(CREATE_ACTION_LEDGER_INDEX),
       ]);
       await database.prepare("PRAGMA optimize").run();
     })().catch((error) => {
